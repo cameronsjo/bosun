@@ -1,27 +1,29 @@
-# Change: Select one stable container per service for drift, health and the restart breaker
+# Change: Select one stable container per service for drift and health; track every container in the restart breaker
 
 ## Why
 
 Bosun keeps one observed container per declared service, but chooses it by
 whatever order Docker lists containers in (`CollectActualState`,
-cameronsjo/bosun#799). Two things go wrong:
+cameronsjo/bosun#799). A stopped leftover that lists before a running
+container reports the service as `missing` (`state=exited`), forces the
+commit-already-deployed skip check to re-run the pipeline, and fails the
+post-deploy health poll.
 
-- A stopped leftover that lists before a running container reports the
-  service as `missing` (`state=exited`), forces the commit-already-deployed
-  skip check to re-run the pipeline, and fails the post-deploy health poll.
-- The restart breaker watches only the selected container, so which replica
-  it watches changes with list order.
+The first design also made the restart breaker watch only the selected
+container. Review showed that is wrong for a scaled service:
 
-A state-based "worst replica wins" rule would fix the first and break the
-second: a crash-looping replica alternates between `restarting` and
-`running`, so its rank would flip the selected container every sample. The
-breaker starts a fresh baseline whenever the observed container ID changes
-(`evaluateRestartBreaker`, `internal/reconcile/restart_breaker.go`), so the
-loop would never accumulate enough restarts to trip. No requirement states
-that baseline reset: Restart Breaker Resolution Attribution covers container
-identity only on the tripped-to-resolved path, and Restart Breaker Baseline
-Integrity covers the window, not identity. The reset is code behavior this
-change relies on and does not spec.
+- When the breaker stops the selected replica, selection moves to a running
+  sibling, and the tracked entry resolved after two quiet samples while the
+  stopped replica stayed stopped. The next deploy restarts it, and the breaker
+  trips again.
+- When every replica crash-loops, the breaker stops one and never the others.
+- A crash-looping replica that is not the selected one is never watched.
+
+All three come from one cause: the breaker evaluates one container per
+service. A state-based "worst replica wins" selection would also flip the
+selected container on every crash-loop sample and reset the breaker baseline
+each time the observed container ID changes (`evaluateRestartBreaker`,
+`internal/reconcile/restart_breaker.go`).
 
 ## What Changes
 
@@ -29,54 +31,56 @@ change relies on and does not spec.
   (`running` or `restarting`) is selected over a stopped one, and among
   candidates the oldest container wins, with the smallest container ID as the
   tie-break. Health and the `restarting`/`running` alternation never change
-  the pick, so the breaker keeps one baseline for a looping replica.
-- The rule covers every reader of a service's container: the drift check, the
-  commit-already-deployed skip check, the post-deploy health poll, and the
-  restart breaker. The requirement names all four, and each has a scenario.
-- The new requirement supersedes the per-container wording in Declared vs
-  Actual State Comparison and State-Based Skip Logic; neither is modified.
-  Declared vs Actual State Comparison is over 500 characters on `main`, so
-  restating it whole would not validate under openspec 2.2.0 strict
-  (cameronsjo/bosun#828), which is also how cameronsjo/bosun#819 handled the
-  same cap. How they read together once archived: the older text still
-  describes a service with one container (a stopped container is `missing`);
-  where a service has several, the selection rule picks the container that
-  text is about. So an exited leftover beside a running replica is not
-  "the container" and raises no `missing` item. The superseded text is the
-  "Non-running service detected as missing" scenario, the stopped-state clause
-  of the `missing` drift type, and the sentence in State-Based Skip Logic
-  that a container "in any other state ... is not present".
-- A breaker-stopped replica hands the service to a live sibling. The tracked
-  entry then sees a different container, keeps its tripped state through one
-  grace sample, and resolves after a second unchanged sample, even though the
-  stopped replica stays stopped. This was list-order dependent before; the
-  scenarios pin it.
+  the pick. It covers drift, the commit-already-deployed skip check and the
+  post-deploy health poll, and each has a scenario.
+- New requirement Restart Breaker Replica Tracking. The breaker evaluates
+  every running or restarting container of a service, each with its own
+  baseline keyed by container ID, and stops each one that reaches the
+  threshold. A tripped entry stays tied to the container that tripped and
+  resolves only when that container, or the container that replaces it, runs
+  stably. A breaker-stopped replica therefore stays tripped, with no resolved
+  alert, while a sibling runs. Selection does not affect the breaker. A service
+  with one container behaves as before.
+- Both requirements supersede wording in existing requirements instead of
+  modifying them. Service State Selection supersedes the per-container
+  wording in Declared vs Actual State Comparison and State-Based Skip Logic;
+  neither is restated, because Declared vs Actual State Comparison is over 500
+  characters on `main` and would not validate under openspec 2.2.0 strict
+  (cameronsjo/bosun#828), the same cap cameronsjo/bosun#819 worked around.
+  The superseded text is the "Non-running service detected as missing"
+  scenario, the stopped-state clause of the `missing` drift type, and the
+  sentence in State-Based Skip Logic that a container "in any other state ...
+  is not present". Restart Breaker Replica Tracking narrows Restart Breaker
+  Baseline Integrity and Restart Breaker Resolution Attribution, whose
+  per-service wording describes the one-container case. Restart Breaker
+  Resolution Attribution still holds for a replacement container: it stays
+  tripped for a grace sample before it resolves.
 
 ## Not changed
 
 - An unhealthy or restarting replica that is not the selected one is not
-  reported. Reporting every replica needs a per-replica drift item and is a
-  separate change; the current model has one row per service.
+  reported by drift or the health poll. Reporting every replica needs a
+  per-replica drift item (cameronsjo/bosun#853); the breaker no longer depends
+  on it.
 - `docker compose run` one-off containers (`com.docker.compose.oneoff`) are
   still matched to their service. Excluding them is a separate change with its
   own `matchContainer` tests.
-- Restart-breaker tracking stays per service. A tripped entry does not stick
-  to the container that tripped it.
-- A crash-looping replica caught in `created` or `exited` for one sample
-  between restarts, with a running newer sibling, hands the selection to the
-  sibling for that sample and resets the baseline. Docker normally reports
-  `restarting` throughout the backoff, so this is rare; the code PR pins it
-  with a test over `exited` mid-loop.
+- A tripped container that is started again and keeps looping is not stopped a
+  second time; the tripped path only watches for stability, as before.
 
 ## Impact
 
-- Affected specs: reconcile (new requirement Service State Selection;
-  Declared vs Actual State Comparison and State-Based Skip Logic are
-  unchanged and now read through it)
-- Affected code: `internal/reconcile/drift.go` (`CollectActualState` and a
-  `preferContainer` helper over `docker.ContainerInfo`); nine production call
-  sites read the result unchanged (`internal/cmd/drift.go`,
-  `internal/reconcile/drift.go`, `health.go`, `reconcile.go` x5,
-  `internal/daemon/daemon.go`)
+- Affected specs: reconcile (new requirements Service State Selection and
+  Restart Breaker Replica Tracking; the existing requirements named above are
+  unchanged and now read through them)
+- Affected code: `internal/reconcile/drift.go` (`CollectActualState`, a
+  `preferContainer` helper over `docker.ContainerInfo`, and the containers of
+  each service on `ActualService`); `internal/reconcile/restart_breaker.go`
+  (per-container observations and tracking keys); the readers of tripped
+  state by service (`ServiceIsPresent` callers in `pure.go` and
+  `compose_select.go`). Eight direct production callers of
+  `CollectActualState` read the selected container unchanged
+  (`internal/cmd/drift.go`, `internal/reconcile/drift.go`, `health.go`,
+  `reconcile.go` x5); the daemon reaches it through `RunDriftCheckWithState`.
 - Affected docs: `docs/gitops.md`, `docs/commands.md`, and
-  `skills/onboard/resources/gitops.md` (container matching)
+  `skills/onboard/resources/gitops.md` (container matching and the breaker)
