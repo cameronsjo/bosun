@@ -19,6 +19,9 @@ import (
 const (
 	// SnapshotPrefix is the prefix for snapshot directory names.
 	SnapshotPrefix = "snapshot-"
+	// PreRollbackPrefix is the prefix for the copy of the current output that
+	// Restore saves before it swaps a snapshot in.
+	PreRollbackPrefix = "pre-rollback-"
 	// DateFormat is the timestamp format used in snapshot names (legacy, for parsing).
 	DateFormat = "20060102-150405"
 	// DateFormatPrecise includes nanoseconds to prevent same-second collisions.
@@ -28,6 +31,35 @@ const (
 	// MinFreeDiskBytes is the minimum free disk space required (100MB).
 	MinFreeDiskBytes = 100 * 1024 * 1024
 )
+
+// ErrInvalidName reports a snapshot or backup name that is not a single,
+// prefixed path element.
+var ErrInvalidName = errors.New("invalid name")
+
+// restorableSuffixes are the output file suffixes GetRestoredFiles reports.
+// Compose output is written as <stack>.yml.tmpl, so filepath.Ext alone misses it.
+var restorableSuffixes = []string{".yml", ".yaml", ".yml.tmpl", ".yaml.tmpl"}
+
+// ValidateEntryName checks that name is one local path element that starts
+// with prefix and has a non-empty remainder. Callers join the name under a
+// trusted root, so anything else could resolve outside that root.
+func ValidateEntryName(name, prefix string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("%w %q: empty", ErrInvalidName, name)
+	case !filepath.IsLocal(name):
+		return fmt.Errorf("%w %q: not a local path", ErrInvalidName, name)
+	case strings.ContainsAny(name, `/\`):
+		return fmt.Errorf("%w %q: contains a path separator", ErrInvalidName, name)
+	case filepath.Clean(name) != name:
+		return fmt.Errorf("%w %q: not in clean form", ErrInvalidName, name)
+	case !strings.HasPrefix(name, prefix):
+		return fmt.Errorf("%w %q: expected prefix %q", ErrInvalidName, name, prefix)
+	case name == prefix:
+		return fmt.Errorf("%w %q: missing suffix after prefix", ErrInvalidName, name)
+	}
+	return nil
+}
 
 // SnapshotInfo holds metadata about a snapshot.
 type SnapshotInfo struct {
@@ -39,6 +71,7 @@ type SnapshotInfo struct {
 
 type restoreOps struct {
 	stat         func(string) (os.FileInfo, error)
+	lstat        func(string) (os.FileInfo, error)
 	dirSize      func(string) (int64, error)
 	diskSpace    func(string, int64) error
 	hasContent   func(string) (bool, error)
@@ -48,6 +81,7 @@ type restoreOps struct {
 	rename       func(string, string) error
 	now          func() time.Time
 	newRestoreID func() string
+	cleanup      func(string) error
 }
 
 type cleanupErrors []error
@@ -67,6 +101,7 @@ func (errs cleanupErrors) Unwrap() []error {
 func defaultRestoreOps() restoreOps {
 	return restoreOps{
 		stat:         os.Stat,
+		lstat:        os.Lstat,
 		dirSize:      getDirSize,
 		diskSpace:    checkDiskSpace,
 		hasContent:   dirHasContentForRestore,
@@ -76,6 +111,7 @@ func defaultRestoreOps() restoreOps {
 		rename:       os.Rename,
 		now:          time.Now,
 		newRestoreID: func() string { return uuid.New().String()[:8] },
+		cleanup:      Cleanup,
 	}
 }
 
@@ -160,6 +196,16 @@ func Create(manifestDir string) (string, error) {
 
 // List returns available snapshots sorted by date (newest first).
 func List(manifestDir string) ([]SnapshotInfo, error) {
+	return listWithPrefix(manifestDir, SnapshotPrefix)
+}
+
+// listPreRollback returns the pre-rollback copies Restore saves, newest first.
+// They are kept out of List so they never appear as rollback targets.
+func listPreRollback(manifestDir string) ([]SnapshotInfo, error) {
+	return listWithPrefix(manifestDir, PreRollbackPrefix)
+}
+
+func listWithPrefix(manifestDir, prefix string) ([]SnapshotInfo, error) {
 	snapDir := snapshotsDir(manifestDir)
 
 	entries, err := os.ReadDir(snapDir)
@@ -172,7 +218,7 @@ func List(manifestDir string) ([]SnapshotInfo, error) {
 
 	var snapshots []SnapshotInfo
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), SnapshotPrefix) {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 
@@ -188,7 +234,7 @@ func List(manifestDir string) ([]SnapshotInfo, error) {
 		fileCount := countFiles(path)
 
 		// Parse timestamp from name (try precise format first, then legacy)
-		timestamp := strings.TrimPrefix(entry.Name(), SnapshotPrefix)
+		timestamp := strings.TrimPrefix(entry.Name(), prefix)
 		created, err := time.Parse(DateFormatPrecise, timestamp)
 		if err != nil {
 			// Try legacy format without nanoseconds
@@ -224,6 +270,9 @@ func Restore(manifestDir, snapshotName string) error {
 func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 	start := time.Now()
 	logger := log.Component("snapshot")
+	if err := ValidateEntryName(snapshotName, SnapshotPrefix); err != nil {
+		return fmt.Errorf("restore snapshot: %w", err)
+	}
 	snapDir := snapshotsDir(manifestDir)
 	snapshotPath := filepath.Join(snapDir, snapshotName)
 	outDir := outputDir(manifestDir)
@@ -234,13 +283,18 @@ func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 		Str(log.FieldPath, manifestDir).
 		Msg("Restoring snapshot")
 
-	// Verify snapshot exists
-	snapshotInfo, err := ops.stat(snapshotPath)
+	// Verify snapshot exists. Lstat, not Stat: a symlinked snapshot would
+	// otherwise be followed, and CopyDir skips a symlinked root, so the
+	// restore would replace output with an empty directory.
+	snapshotInfo, err := ops.lstat(snapshotPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("snapshot not found: %s", snapshotName)
 		}
 		return fmt.Errorf("inspect snapshot: %w", err)
+	}
+	if snapshotInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("snapshot is a symlink: %s", snapshotName)
 	}
 	if !snapshotInfo.IsDir() {
 		return fmt.Errorf("snapshot is not a directory: %s", snapshotName)
@@ -261,7 +315,7 @@ func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 		return fmt.Errorf("inspect current output for backup: %w", err)
 	}
 	if hasOutputContent {
-		backupName := "pre-rollback-" + ops.now().Format(DateFormatPrecise)
+		backupName := PreRollbackPrefix + ops.now().Format(DateFormatPrecise)
 		backupPath := filepath.Join(snapDir, backupName)
 
 		if err := ops.mkdirAll(backupPath, 0755); err != nil {
@@ -325,6 +379,16 @@ func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 		_ = ops.removeAll(oldDir)
 	}
 
+	// Prune both buckets so pre-rollback copies stay bounded. The restore
+	// already succeeded, so a pruning failure is a warning, not an error.
+	if err := ops.cleanup(manifestDir); err != nil {
+		logger.Warn().
+			Err(err).
+			Str(log.FieldOperation, "restore").
+			Str(log.FieldPath, snapDir).
+			Msg("Failed to prune snapshots after restore")
+	}
+
 	logger.Info().
 		Str(log.FieldOperation, "restore").
 		Str("snapshot", snapshotName).
@@ -334,10 +398,31 @@ func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 	return nil
 }
 
-// Cleanup removes snapshots beyond the retention limit.
-// Continues deleting even if individual removals fail, returning a summary of all errors.
+// Cleanup removes snapshots and pre-rollback copies beyond the retention
+// limit, keeping MaxSnapshots of each. Continues deleting even if individual
+// removals fail, returning a summary of all errors.
 func Cleanup(manifestDir string) error {
-	return cleanupWithOps(manifestDir, List, removeWithRetry)
+	return cleanupBuckets(
+		manifestDir,
+		[]func(string) ([]SnapshotInfo, error){List, listPreRollback},
+		removeWithRetry,
+	)
+}
+
+// cleanupBuckets prunes each bucket independently. A failed bucket does not
+// stop the others; every bucket's error is joined into the result.
+func cleanupBuckets(
+	manifestDir string,
+	lists []func(string) ([]SnapshotInfo, error),
+	remove func(string, int) error,
+) error {
+	var errs []error
+	for _, list := range lists {
+		if err := cleanupWithOps(manifestDir, list, remove); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func cleanupWithOps(
@@ -390,8 +475,7 @@ func GetRestoredFiles(manifestDir string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		ext := filepath.Ext(d.Name())
-		if !d.IsDir() && (ext == ".yml" || ext == ".yaml") {
+		if !d.IsDir() && hasRestorableSuffix(d.Name()) {
 			relPath, _ := filepath.Rel(manifestDir, path)
 			files = append(files, relPath)
 		}
@@ -399,6 +483,15 @@ func GetRestoredFiles(manifestDir string) ([]string, error) {
 	})
 
 	return files, err
+}
+
+func hasRestorableSuffix(name string) bool {
+	for _, suffix := range restorableSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // dirHasContent checks if a directory exists and has at least one file.

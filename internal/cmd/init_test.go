@@ -141,6 +141,8 @@ func TestStarterTemplates(t *testing.T) {
 		assert.Contains(t, starterGitignore, "__pycache__")
 		assert.Contains(t, starterGitignore, ".venv")
 		assert.Contains(t, starterGitignore, ".DS_Store")
+		// Provision snapshots land under manifest/.bosun/snapshots.
+		assert.Regexp(t, `(?m)^\.bosun/$`, starterGitignore)
 	})
 
 	t.Run("starterReadme has structure", func(t *testing.T) {
