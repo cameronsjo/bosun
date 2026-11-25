@@ -93,7 +93,7 @@ func resolveTargetHost(configHost string, secrets map[string]any) string {
 	}
 
 	if network, ok := secrets["network"].(map[string]any); ok {
-		if ip, ok := network["unraid_ip"].(string); ok {
+		if ip, ok := network["unraid_ip"].(string); ok && strings.TrimSpace(ip) != "" {
 			return "root@" + ip
 		}
 	}
@@ -206,8 +206,12 @@ func buildSSHKeyPaths(envKey, homeDir string) []string {
 		envKey,
 		"/config/deploy-key",
 		"/config/ssh-key",
-		filepath.Join(homeDir, ".ssh", "id_ed25519"),
-		filepath.Join(homeDir, ".ssh", "id_rsa"),
+	}
+	if homeDir != "" {
+		paths = append(paths,
+			filepath.Join(homeDir, ".ssh", "id_ed25519"),
+			filepath.Join(homeDir, ".ssh", "id_rsa"),
+		)
 	}
 
 	// Filter out empty strings from unset env vars.

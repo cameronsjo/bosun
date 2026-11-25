@@ -206,8 +206,6 @@ func TestSSHKeyCandidates_EmptyHomeMatchesRuntime(t *testing.T) {
 	assert.Equal(t, []string{
 		"/config/deploy-key",
 		"/config/ssh-key",
-		filepath.Join(".ssh", "id_ed25519"),
-		filepath.Join(".ssh", "id_rsa"),
 	}, sshKeyCandidates(""))
 }
 

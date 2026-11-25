@@ -1976,10 +1976,13 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 		logger.Error().
 			Err(err).
 			Msg("Restart breaker action failed")
-		return
+		if result == nil {
+			return
+		}
 	}
 
-	// Update state with new tracking data.
+	// Update state with new tracking data (including partial successes when
+	// another container's stop failed, since failed stops were reverted).
 	state.RestartTracking = result.Updated
 
 	// Alert on tripped containers.

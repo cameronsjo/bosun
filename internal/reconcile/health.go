@@ -33,7 +33,22 @@ func pollContainerHealth(
 	timeout time.Duration,
 	interval time.Duration,
 ) (*HealthCheckResult, error) {
+	return pollContainerHealthWithBaseline(ctx, client, declared, projectName, timeout, interval, nil)
+}
+
+func pollContainerHealthWithBaseline(
+	ctx context.Context,
+	client *docker.Client,
+	declared []DeclaredService,
+	projectName string,
+	timeout time.Duration,
+	interval time.Duration,
+	preDeployUnhealthy map[string]bool,
+) (*HealthCheckResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	if interval <= 0 {
+		interval = HealthGatePollInterval
+	}
 	start := time.Now()
 	deadline := start.Add(timeout)
 	iteration := 0
@@ -53,16 +68,19 @@ func pollContainerHealth(
 			// persistent Docker API failure can't poll forever.
 		} else {
 			unhealthy = classifyHealth(declared, actual)
+			blocking := blockingUnhealthy(unhealthy, preDeployUnhealthy)
 
 			logger.Debug().
 				Int("iteration", iteration).
 				Int("unhealthy_count", len(unhealthy)).
+				Int("blocking_unhealthy_count", len(blocking)).
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 				Msg("Health poll iteration")
 
-			if len(unhealthy) == 0 {
+			if len(blocking) == 0 {
 				result := &HealthCheckResult{
 					Passed:     true,
+					Unhealthy:  unhealthy,
 					Duration:   time.Since(start),
 					Iterations: iteration,
 				}
