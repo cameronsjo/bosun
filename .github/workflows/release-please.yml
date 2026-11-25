@@ -162,15 +162,28 @@ jobs:
             --dir /tmp
           tar -xzf "/tmp/bosun_${VERSION}_linux_amd64.tar.gz" -C bosun/
 
+      - name: Compute Docker image tags
+        id: docker-tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/cameronsjo/bosun:${VERSION}"
+            if [ "${EVENT_NAME}" = "push" ]; then
+              echo "ghcr.io/cameronsjo/bosun:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         id: docker-push
         with:
           context: bosun
           push: true
-          tags: |
-            ghcr.io/cameronsjo/bosun:${{ steps.version.outputs.version }}
-            ghcr.io/cameronsjo/bosun:latest
+          tags: ${{ steps.docker-tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/cameronsjo/bosun
             org.opencontainers.image.version=${{ steps.version.outputs.version }}

@@ -25,11 +25,12 @@ const diagramsDir = join(here, "..", "..", "docs", "diagrams");
 // quote-agnostic; url() catches CSS external references beyond @import.
 const ACTIVE_CONTENT = [
   [/<script/i, "script element"],
-  [/\son[a-z]+\s*=/i, "event-handler attribute"],
+  [/[\s/]on[a-z]+\s*=/i, "event-handler attribute"],
   [/<foreignObject/i, "foreignObject element"],
   [/(?:xlink:)?href\s*=\s*['"]?(?!#)\S/i, "non-fragment href"],
   [/javascript:/i, "javascript: URL"],
   [/url\(\s*['"]?\s*(?:https?:)?\/\//i, "external url() reference"],
+  [/@import\s+['"]\s*(?:https?:)?\/\//i, "external @import reference"],
 ];
 
 // The one sanctioned external reference: the export contract's Google Fonts

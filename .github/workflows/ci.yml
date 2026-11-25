@@ -8,12 +8,14 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
 
