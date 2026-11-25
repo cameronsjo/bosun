@@ -1592,6 +1592,33 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	telemetry.SpanOK(otelDriftSpan)
 	otelDriftSpan.End()
 
+	// A dry run observes only (#792). Everything after this point mutates: it
+	// saves the state file, may stop a restart-looping container, consumes a
+	// self-heal attempt and triggers a reconcile, and alerts. None of it belongs
+	// to a daemon whose contract is "no actual changes", and its dedup and
+	// throttle state could not persist anyway, so alerts would repeat every tick.
+	// The gate sits at the tick's single entry, ahead of those steps, so a change
+	// to what the breaker or self-heal do cannot reopen it. Detection, logging,
+	// metrics, and the runtime status that status views read stay.
+	if targetCfg.DryRun {
+		if d.metrics != nil {
+			d.metrics.RecordDriftCheck(report.HasDrift())
+		}
+		driftStatus := "clean"
+		if report.HasDrift() {
+			driftStatus = "drifted"
+			logger.Warn().
+				Int("drift_items", len(report.Items)).
+				Strs("drift_containers", report.DriftSummaries()).
+				Msg("Drift detected during periodic check")
+		}
+		logger.Info().
+			Str("drift_status", driftStatus).
+			Msg("Dry run: drift observed only. Not saving state, running the restart breaker, self-healing, or alerting")
+		d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
+		return
+	}
+
 	// Stage drift results — save happens after alert dedup updates the state.
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
