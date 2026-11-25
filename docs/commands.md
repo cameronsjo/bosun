@@ -387,11 +387,11 @@ bosun drift --target=nas       # Show drift for a specific target
 
 | Type | Severity | Description |
 |------|----------|-------------|
-| `missing` | Critical | Declared service is not running (or exited) |
+| `missing` | Critical | The service's observed container is not running or restarting (e.g., exited); see Container matching below |
 | `unhealthy` | Critical | Service is running but health check is failing |
 | `image_mismatch` | Warning | Running image differs from declared image |
 
-**Container matching:** Uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels. A service with several containers is observed through one: a running or restarting container wins over a stopped one, then the oldest, then the smallest container ID (health never changes the pick).
+**Container matching:** Uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels. A service with several containers is observed through one: a running or restarting container wins over a stopped one, then the oldest, then the smallest container ID (health never changes the pick). The restart breaker watches every running or restarting container of a service, not only the observed one.
 
 **Target state resolution:** With one configured named target and no `--target`, drift reads that target's daemon-written state file (for example, `deploy-state-nas.json`). With multiple targets, it reports every target. When targets are configured, an unknown `--target` is an error instead of probing an arbitrary state filename. An explicit `--state-file` always reads exactly that path, but does not make an unknown configured target valid.
 

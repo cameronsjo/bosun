@@ -631,7 +631,7 @@ Drift is the difference between what you declared (in your deploy state) and wha
 1. The daemon periodically checks running containers against the declared deploy state
 2. It uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching
 3. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels
-4. Observes one container per service: a running or restarting container wins over a stopped one, then the oldest, then the smallest container ID. Health never changes the pick, so a stopped leftover beside a running replica is not reported as `missing`
+4. Observes one container per service: a running or restarting container wins over a stopped one, then the oldest, then the smallest container ID. Health never changes the pick, so a stopped leftover beside a running replica is not reported as `missing`. The restart breaker is separate: it watches every running or restarting container of a service, each with its own baseline, and a container it stopped stays tripped while a sibling runs
 5. Results are cached in the deploy state file
 
 A periodic drift check skips while a reconciliation runs or a reconcile trigger is waiting. A trigger that arrives during a drift check waits for that check to finish, then starts. Status endpoints are never blocked by a running drift check.

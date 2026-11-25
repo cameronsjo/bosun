@@ -685,7 +685,7 @@ func stagingRelToLive(targets []DeployTarget, appdata, rel string) (string, bool
 func presentServices(actual []ActualService, restartTracking map[string]RestartTrackingEntry) map[string]bool {
 	present := make(map[string]bool, len(actual))
 	for _, svc := range actual {
-		if ServiceIsPresent(svc.State, restartTracking[svc.Name].Tripped) {
+		if ServiceIsPresent(svc.State, serviceTripped(restartTracking, svc.Name)) {
 			present[svc.Name] = true
 		}
 	}

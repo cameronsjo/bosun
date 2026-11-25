@@ -23,6 +23,13 @@ const ComposeProjectLabel = "com.docker.compose.project"
 // ComposeServiceLabel is the label Docker Compose v2 sets for the service name.
 const ComposeServiceLabel = "com.docker.compose.service"
 
+// ServiceContainer is one container of a service, in any state.
+type ServiceContainer struct {
+	Name  string // Full Docker container name (for inspect calls)
+	ID    string // Docker short ID
+	State string
+}
+
 // ActualService represents the observed state of a running container.
 type ActualService struct {
 	Name          string
@@ -30,6 +37,11 @@ type ActualService struct {
 	Image         string
 	State         string
 	Health        string
+	// Containers lists every container of the service, in any state, oldest
+	// first. The fields above describe the one selected by preferContainer;
+	// the restart breaker evaluates each of these. A hand-built value may leave
+	// it empty, which means the selected container is the only one.
+	Containers []ServiceContainer
 }
 
 // DriftIgnoreRule defines a pattern for suppressing known drift noise.
@@ -292,11 +304,13 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 	// Keep one per service, chosen by preferContainer so the pick does not
 	// depend on Docker's list order.
 	selected := make(map[string]docker.ContainerInfo)
+	all := make(map[string][]docker.ContainerInfo)
 	for _, c := range containers {
 		serviceName, matched := matchContainer(c, projectName)
 		if !matched {
 			continue
 		}
+		all[serviceName] = append(all[serviceName], c)
 		if cur, ok := selected[serviceName]; !ok || preferContainer(cur, c) {
 			selected[serviceName] = c
 		}
@@ -310,6 +324,7 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 			Image:         c.Image,
 			State:         c.State,
 			Health:        c.Health,
+			Containers:    serviceContainers(all[serviceName]),
 		})
 	}
 
@@ -325,6 +340,33 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 	return actual, nil
 }
 
+// isLiveState reports whether a container state counts as live for selection:
+// running, or restarting (a crash loop). Every other state, paused included, is
+// stopped. It is a rule of its own, not a call to ServiceIsPresent, so a change
+// to the skip check's presence rule cannot silently change which container
+// drift observes.
+func isLiveState(state string) bool {
+	return state == "running" || state == "restarting"
+}
+
+// serviceContainers lists every container of a service, oldest first (then by
+// ID), so the order does not depend on Docker's list order.
+func serviceContainers(infos []docker.ContainerInfo) []ServiceContainer {
+	sorted := make([]docker.ContainerInfo, len(infos))
+	copy(sorted, infos)
+	sort.Slice(sorted, func(i, j int) bool {
+		if !sorted[i].Created.Equal(sorted[j].Created) {
+			return sorted[i].Created.Before(sorted[j].Created)
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	out := make([]ServiceContainer, 0, len(sorted))
+	for _, c := range sorted {
+		out = append(out, ServiceContainer{Name: c.Name, ID: c.ID, State: c.State})
+	}
+	return out
+}
+
 // preferContainer reports whether cand should replace cur as the observed
 // container of a service (Service State Selection). A live container (running
 // or restarting) beats a stopped one; among equals the oldest by creation time
@@ -333,7 +375,7 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 // restarting/running alternation of a crash-looping replica never change the
 // pick, so the restart breaker keeps one baseline for it.
 func preferContainer(cur, cand docker.ContainerInfo) bool {
-	curLive, candLive := ServiceIsPresent(cur.State, false), ServiceIsPresent(cand.State, false)
+	curLive, candLive := isLiveState(cur.State), isLiveState(cand.State)
 	if curLive != candLive {
 		return candLive
 	}
