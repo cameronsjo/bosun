@@ -4,15 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // legacySharedBackupCount counts backups an earlier release wrote directly under
-// the shared backup root: a backup-* directory that itself holds configs.tar.gz.
-// A named target's own directory (<root>/backup-pi) holds backup-* children but
-// no archive, so it is not counted.
+// the shared backup root: a backup-YYYYMMDD-HHMMSS directory that itself holds
+// configs.tar.gz, the exact shape Backup creates. A named target's own
+// directory (<root>/backup-pi) is not a backup name, and ValidateTargetName
+// refuses a target named like one.
 //
 // An unreadable or missing root counts as zero. A missing root is the normal
 // first-run state; a root that cannot be read also fails the backup's own
@@ -24,7 +24,7 @@ func legacySharedBackupCount(root string) int {
 	}
 	count := 0
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "backup-") {
+		if !e.IsDir() || !isBackupDirName(e.Name()) {
 			continue
 		}
 		info, statErr := os.Lstat(filepath.Join(root, e.Name(), "configs.tar.gz"))

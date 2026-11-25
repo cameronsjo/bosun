@@ -633,6 +633,12 @@ func ValidateTargetName(name string) error {
 	if !safeTargetNamePattern.MatchString(name) {
 		return fmt.Errorf("target name %q contains unsafe characters (allowed: alphanumeric, hyphens, underscores)", name)
 	}
+	// A target directory shaped exactly like a backup would be read as one by
+	// the retention and anchor scans of the shared root (#791). Compare in lower
+	// case so a case-insensitive filesystem cannot alias a real backup name.
+	if isBackupDirName(strings.ToLower(name)) {
+		return fmt.Errorf("target name %q has the shape of a backup directory (backup-YYYYMMDD-HHMMSS), which is reserved: rename the target", name)
+	}
 	return nil
 }
 

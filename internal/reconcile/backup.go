@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -197,6 +198,17 @@ func resolveBackupFile(root, originalPath string) (string, bool) {
 		return "", false
 	}
 	return candidate, true
+}
+
+// backupDirNamePattern is the exact name Backup and BackupRemote give a backup
+// directory: backup-YYYYMMDD-HHMMSS. Scans of a backup root match on it, not on
+// the bare "backup-" prefix, because a named target's own directory under the
+// root (for example backup-pi) shares that prefix and is not a backup (#791).
+var backupDirNamePattern = regexp.MustCompile(`^backup-[0-9]{8}-[0-9]{6}$`)
+
+// isBackupDirName reports whether name is a backup directory name.
+func isBackupDirName(name string) bool {
+	return backupDirNamePattern.MatchString(name)
 }
 
 // backupAbs resolves the archive exclusion path. It is a package variable so a
@@ -639,7 +651,7 @@ func (d *DeployOps) LatestVerifiedBackup(ctx context.Context, backupDir string) 
 
 	var backups []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "backup-") {
+		if e.IsDir() && isBackupDirName(e.Name()) {
 			backups = append(backups, e.Name())
 		}
 	}
@@ -695,7 +707,7 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 	// than left to litter the directory and re-trip the eviction.
 	var valid, invalid []string
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "backup-") {
+		if !e.IsDir() || !isBackupDirName(e.Name()) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {

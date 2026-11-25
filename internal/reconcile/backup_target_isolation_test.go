@@ -133,6 +133,72 @@ func TestCleanupBackupsAfterSuccess_NamedTargetLeavesSiblingsAlone(t *testing.T)
 	}
 }
 
+// TestCleanupBackupsAfterSuccess_DefaultModeKeepsBackupPrefixedTargetDir runs the
+// retention a default-mode run (BackupDir is the shared root) performs, with a
+// named target's directory <root>/backup-pi left in place, as when a deployment
+// goes back from several targets to one. The target directory holds that
+// target's backups and no configs.tar.gz of its own.
+//
+// On the original head retention selected entries by the bare "backup-" prefix,
+// verification failed for backup-pi, and it was deleted as a corrupt backup
+// together with every rollback point inside it.
+func TestCleanupBackupsAfterSuccess_DefaultModeKeepsBackupPrefixedTargetDir(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "backups")
+	targetBackup := mkBackupDir(t, filepath.Join(root, "backup-pi"), "backup-20200101-000001", true)
+	legacyOld := mkBackupDir(t, root, "backup-20200101-000002", true)
+	legacyNew := mkBackupDir(t, root, "backup-20200101-000003", true)
+
+	cfg := DefaultConfig()
+	cfg.BackupDir = root
+	cfg.BackupsToKeep = 1
+	r := NewReconciler(cfg)
+	r.lastBackupIsFresh = true
+	r.cleanupBackupsAfterSuccess(context.Background())
+
+	assert.DirExists(t, filepath.Join(root, "backup-pi"), "a named target's directory is not a backup")
+	assert.DirExists(t, targetBackup, "retention must not reach into a target directory")
+	assert.DirExists(t, legacyNew, "the newest valid backup is kept")
+	assert.NoDirExists(t, legacyOld, "retention still prunes real backups beyond BackupsToKeep")
+}
+
+// TestLatestVerifiedBackup_IgnoresBackupPrefixedNonBackupDir seeds a directory
+// that has the "backup-" prefix but not the timestamp shape and happens to hold
+// a valid archive. On the original head the bare-prefix scan returned it as the
+// newest anchor ("backup-pi" sorts after the digits).
+func TestLatestVerifiedBackup_IgnoresBackupPrefixedNonBackupDir(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "backups")
+	want := mkBackupDir(t, root, "backup-20200101-000001", true)
+	_ = mkBackupDir(t, root, "backup-pi", true)
+
+	got, err := NewDeployOps(false, "").LatestVerifiedBackup(context.Background(), root)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestIsBackupDirName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"backup-20200101-000001", true},
+		{"backup-20241231-235959", true},
+		{"backup-pi", false},
+		{"backup-old", false},
+		{"backup-2024-01-01", false},
+		{"backup-20200101-00000", false},
+		{"backup-20200101-0000012", false},
+		{"backup-20200101-000001-x", false},
+		{"xbackup-20200101-000001", false},
+		{"Backup-20200101-000001", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isBackupDirName(tt.name))
+		})
+	}
+}
+
 // TestBackupExcluding_ExcludesSharedRoot backs up a tree that contains a
 // sibling's backup under the shared root, writing into a's own directory.
 // Without root exclusion only <root>/a is skipped and the sibling's archive is
@@ -213,6 +279,8 @@ func TestBackupRemoteExcluding_ExcludeArgument(t *testing.T) {
 // failure branch no earlier test reached; it cannot compile on the original
 // code, which has no seam.
 func TestBackupExcluding_ResolveFailureIsFatalAndLeavesNoDir(t *testing.T) {
+	// backupAbs is a package variable: this test must not call t.Parallel, and no
+	// parallel test may run a local backup while it is swapped.
 	original := backupAbs
 	backupAbs = func(string) (string, error) { return "", errors.New("injected getwd failure") }
 	t.Cleanup(func() { backupAbs = original })
@@ -254,6 +322,9 @@ func TestLegacySharedBackupCount(t *testing.T) {
 		}, want: 0},
 		{name: "legacy directory without an archive", setup: func(t *testing.T, root string) {
 			require.NoError(t, os.MkdirAll(filepath.Join(root, "backup-20200101-000001"), 0o755))
+		}, want: 0},
+		{name: "backup-prefixed directory holding an archive is not a backup name", setup: func(t *testing.T, root string) {
+			writeArchive(t, filepath.Join(root, "backup-old"))
 		}, want: 0},
 		{name: "plain file named like a backup", setup: func(t *testing.T, root string) {
 			require.NoError(t, os.MkdirAll(root, 0o755))

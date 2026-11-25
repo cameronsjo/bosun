@@ -200,14 +200,19 @@ reconcile (GH#319, bosun-5qx):
   target's `<BackupDir>/<target>` directory, so no archive holds a sibling's
   backups.
 - **Upgrading a multi-target deployment.** Backups an earlier release wrote
-  directly under `BackupDir` (`<BackupDir>/backup-*`) are not used, counted, or
-  pruned by named targets, because their owner is unknown; each reconcile logs
-  one warning while any remain. A named target's first failed backup after the
-  upgrade aborts its deploy, since its new directory holds no verified anchor.
-  Once every target has a fresh verified backup, review
-  `ls -d <BackupDir>/backup-*` and remove the old directories with `rm -r`.
-  Restore a named target's backup with `BACKUP_DIR=<BackupDir>/<target> bosun
-  restore --list`.
+  directly under `BackupDir` (`<BackupDir>/backup-YYYYMMDD-HHMMSS/`) are not
+  used, counted, or pruned by named targets, because their owner is unknown;
+  each reconcile logs one warning while any remain, so expect it until they are
+  removed. A named target's first failed backup after the upgrade aborts its
+  deploy, since its new directory holds no verified anchor. Named targets live
+  in subdirectories of `BackupDir`, and a target may be named `backup-pi`, so
+  never remove `<BackupDir>/backup-*` with a bare glob. Once every target has a
+  fresh verified backup, list only the legacy backups (timestamp-named
+  directories that directly hold `configs.tar.gz`) with
+  `find <BackupDir> -mindepth 1 -maxdepth 1 -type d -name 'backup-[0-9]*-[0-9]*' -exec test -f {}/configs.tar.gz \; -print`,
+  and delete exactly those by replacing `-print` with `-exec rm -r {} \;`. A
+  target name shaped like `backup-YYYYMMDD-HHMMSS` is rejected. Restore a named
+  target's backup with `BACKUP_DIR=<BackupDir>/<target> bosun restore --list`.
 - **Bounded deadlines.** `BackupTimeout` (default 5m, overridable via
   `BOSUN_BACKUP_TIMEOUT` — accepts a Go duration or plain seconds) applies
   independently to pre-deploy creation + verification and post-success

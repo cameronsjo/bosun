@@ -921,17 +921,29 @@ The archive of a named target excludes the shared `backups/` root, so a
 full-appdata fallback never contains a sibling's backups.
 
 **Upgrading a multi-target deployment.** Backups an earlier release wrote
-directly under `backups/` (`backups/backup-*`) are not used, counted, or pruned
-by named targets, because their owner is unknown. Each reconcile logs one
-warning while any remain. A named target's first failed backup after the
-upgrade aborts its deploy, because its new directory holds no verified anchor.
-Once every target has a fresh verified backup, review the old directories and
-remove them:
+directly under `backups/` (`backups/backup-YYYYMMDD-HHMMSS/`) are not used,
+counted, or pruned by named targets, because their owner is unknown. Each
+reconcile logs one warning while any remain, so expect it until you remove
+them. A named target's first failed backup after the upgrade aborts its deploy,
+because its new directory holds no verified anchor.
+
+Named targets live in subdirectories of `backups/`, and a target may be named
+`backup-pi`, so do not remove `backups/backup-*` with a bare glob. Once every
+target has a fresh verified backup, list only the legacy backups, directories
+that match the timestamp name and hold `configs.tar.gz` directly:
 
 ```bash
-ls -d /app/backups/backup-*
-rm -r /app/backups/backup-*
+find /app/backups -mindepth 1 -maxdepth 1 -type d -name 'backup-[0-9]*-[0-9]*' -exec test -f {}/configs.tar.gz \; -print
 ```
+
+When the list holds only backups you no longer need, delete exactly those:
+
+```bash
+find /app/backups -mindepth 1 -maxdepth 1 -type d -name 'backup-[0-9]*-[0-9]*' -exec test -f {}/configs.tar.gz \; -exec rm -r {} \;
+```
+
+A target cannot be named like a backup directory (`backup-YYYYMMDD-HHMMSS`);
+Bosun rejects that name.
 
 `bosun restore` reads `BACKUP_DIR`; for a named target point it at that
 target's directory, for example `BACKUP_DIR=/app/backups/unraid bosun restore --list`.
