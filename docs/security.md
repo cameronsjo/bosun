@@ -702,9 +702,14 @@ then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET`. Two cases fail closed:
   conflict in its socket `GET /config` answer, so a receiver using
   `--fetch-secret` fails closed the same way, whatever its own opt-out says.
 
-The generic `/webhook` on both servers reads its HMAC from the first present of
-`X-Signature`, `X-Hub-Signature-256`, `X-Signature-256`; a later valid header
-never rescues an invalid earlier one. `/webhook/github` reads only
+**Upgrade the daemon and the `bosun webhook` receiver together.** A receiver
+built before this change ignores the daemon's conflict flag, so against a
+daemon in conflict it reads the empty secret as none and, with its own opt-out
+set, would accept unsigned triggers.
+
+The generic `/webhook` on both servers reads its HMAC from the first non-empty
+of `X-Signature`, `X-Hub-Signature-256`, `X-Signature-256` (a header sent empty
+is skipped); a later valid header never rescues an invalid earlier one. `/webhook/github` reads only
 `X-Hub-Signature-256` and `/webhook/manual` only `X-Signature`.
 
 **The standalone `bosun webhook` receiver fails closed the same way.** It
