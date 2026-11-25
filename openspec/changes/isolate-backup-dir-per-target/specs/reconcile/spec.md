@@ -44,7 +44,7 @@ A backup archive SHALL NOT contain the shared backup root, meaning the configure
 
 ### Requirement: Backup Directory Names
 
-Scans of a backup directory for rollback anchors, retention, and legacy backups SHALL treat only entries named exactly `backup-YYYYMMDD-HHMMSS` as backups. A target directory such as `<BackupDir>/backup-pi` SHALL never be selected, counted, or deleted as a backup. A target name of that exact shape SHALL be rejected, matched case-insensitively, with an error naming the rule.
+Scans of a backup directory for rollback anchors, retention (including removal of corrupt or partial backups), and legacy backups SHALL treat only entries named exactly `backup-YYYYMMDD-HHMMSS` as backups. A target directory such as `<BackupDir>/backup-pi` SHALL never be selected, counted, or deleted as a backup. A target name of that exact shape SHALL be rejected, matched case-insensitively, with an error naming the rule.
 
 #### Scenario: A backup-prefixed target directory survives retention
 
@@ -55,7 +55,7 @@ Scans of a backup directory for rollback anchors, retention, and legacy backups 
 
 #### Scenario: A non-timestamp name is not a backup
 
-- **WHEN** a directory named `backup-old` holds a `configs.tar.gz` under a scanned backup directory
+- **WHEN** a directory named `backup-old` holds a `configs.tar.gz` directly under a scanned backup directory
 - **THEN** it is not selected as a rollback anchor and not counted as a legacy backup
 
 #### Scenario: A backup-shaped target name is rejected

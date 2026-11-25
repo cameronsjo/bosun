@@ -17,7 +17,7 @@ Named targets share one `BackupDir`, although state file, staging directory, and
 
 - Affected specs: `reconcile` (ADDED only).
 - Affected code: `internal/reconcile/target.go`, `reconcile.go`, `backup.go`; docs and `skills/onboard/resources/*`.
-- Upgrade: pre-existing `<BackupDir>/backup-*` directories of a multi-target deployment are orphaned until removed. Per current code (`applyBackupFailurePolicy`), the first failed backup of a named target aborts its deploy, because no verified anchor exists in its new directory.
+- Upgrade: pre-existing `<BackupDir>/backup-YYYYMMDD-HHMMSS` directories of a multi-target deployment are orphaned until removed. A target already named exactly like one (very unlikely) fails target resolution and must be renamed. Per current code (`applyBackupFailurePolicy`), the first failed backup of a named target aborts its deploy, because no verified anchor exists in its new directory.
 
 ## Relationship to other changes
 
