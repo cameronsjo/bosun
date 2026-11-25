@@ -633,6 +633,8 @@ Drift is the difference between what you declared (in your deploy state) and wha
 3. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels
 4. Results are cached in the deploy state file
 
+A periodic drift check skips while a reconciliation runs or a reconcile trigger is waiting. A trigger that arrives during a drift check waits for that check to finish, then starts. Status endpoints are never blocked by a running drift check.
+
 ### Drift Types
 
 | Type | Severity | Meaning |

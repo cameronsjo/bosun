@@ -347,13 +347,15 @@ Images are normalized before comparison: bare names (e.g., `nginx`) are treated 
 
 When running as a daemon, drift checks run on a configurable interval (default: 5 minutes, set via `BOSUN_DRIFT_INTERVAL`). The loop:
 
-1. Skips if a reconciliation is in progress (avoids state file race conditions)
+1. Skips if a reconciliation is in progress or a reconcile trigger is waiting (avoids state file race conditions)
 2. Loads declared state from the deploy state file
 3. Queries Docker for actual state
 4. Filters through the debounce layer (if enabled via `BOSUN_DRIFT_ALERT_DEBOUNCE`)
 5. Filters through the dedup layer (per-item cooldown via `BOSUN_DRIFT_ALERT_COOLDOWN`)
-6. Updates the state file with drift results and debounce/dedup timestamps
-7. Sends an alert if critical drift persists past both layers
+6. Sends an alert if critical drift persists past both layers
+7. Updates the state file with drift results and debounce/dedup timestamps, recording only alerts that were delivered
+
+A reconcile trigger that arrives while a drift check runs waits for that check to finish, then starts. Status endpoints (`/status`, `/api/status`) are not blocked by a running drift check.
 
 Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
 
