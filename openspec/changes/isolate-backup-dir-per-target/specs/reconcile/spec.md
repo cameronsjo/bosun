@@ -42,18 +42,40 @@ A backup archive SHALL NOT contain the shared backup root, meaning the configure
 - **WHEN** a backed-up path contains the shared backup root, such as the full-appdata fallback
 - **THEN** the created archive contains neither the shared root nor any target's backups
 
+### Requirement: Backup Directory Names
+
+Scans of a backup directory for rollback anchors, retention, and legacy backups SHALL treat only entries named exactly `backup-YYYYMMDD-HHMMSS` as backups. A target directory such as `<BackupDir>/backup-pi` SHALL never be selected, counted, or deleted as a backup. A target name of that exact shape SHALL be rejected, matched case-insensitively, with an error naming the rule.
+
+#### Scenario: A backup-prefixed target directory survives retention
+
+- **WHEN** a run whose backup directory is the shared root prunes backups
+- **AND** the root holds a target directory `backup-pi` with its own backups beneath it
+- **THEN** `backup-pi` and everything in it is kept
+- **AND** only entries named `backup-YYYYMMDD-HHMMSS` are counted and pruned
+
+#### Scenario: A non-timestamp name is not a backup
+
+- **WHEN** a directory named `backup-old` holds a `configs.tar.gz` under a scanned backup directory
+- **THEN** it is not selected as a rollback anchor and not counted as a legacy backup
+
+#### Scenario: A backup-shaped target name is rejected
+
+- **WHEN** a target is named `backup-20240115-143022`, in any letter case
+- **THEN** target resolution rejects it with an error naming the reserved shape
+- **AND** a target named `backup-pi` is accepted
+
 ### Requirement: Legacy Shared Backups
 
-A `backup-*` directory that directly holds `configs.tar.gz` under the shared root, written by an earlier release, SHALL NOT be selected as a rollback anchor, counted for retention, or deleted by a named target. When a named target's reconcile finds one, it SHALL log one warning per run naming the shared root.
+A `backup-YYYYMMDD-HHMMSS` directory that directly holds `configs.tar.gz` under the shared root, written by an earlier release, SHALL NOT be selected as a rollback anchor, counted for retention, or deleted by a named target. When a named target's reconcile finds one, it SHALL log one warning per run naming the shared root.
 
 #### Scenario: Legacy shared backups are left alone
 
-- **WHEN** a named target finds `backup-*` directories holding an archive directly under the shared root
+- **WHEN** a named target finds `backup-YYYYMMDD-HHMMSS` directories holding an archive directly under the shared root
 - **THEN** it neither uses, counts, nor deletes them
 - **AND** it logs one warning per run naming the shared root
 
 #### Scenario: A target directory named like a backup is not legacy
 
-- **WHEN** a target named `backup-pi` has a directory `<BackupDir>/backup-pi` that holds only its own `backup-*` subdirectories
+- **WHEN** a target named `backup-pi` has a directory `<BackupDir>/backup-pi` that holds only its own `backup-YYYYMMDD-HHMMSS` subdirectories
 - **THEN** that directory is not treated as a legacy backup
 - **AND** no legacy warning is logged for it

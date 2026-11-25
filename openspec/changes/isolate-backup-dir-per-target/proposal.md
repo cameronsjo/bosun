@@ -10,6 +10,7 @@ Named targets share one `BackupDir`, although state file, staging directory, and
 - Anchor recovery, retention, and corrupt-backup removal act on the target's own directory only.
 - Archive self-exclusion covers the shared backup root, not only the target's own directory, so a full-appdata fallback never archives a sibling's backups.
 - Backups that earlier releases wrote directly under the shared root are neither used nor pruned by a named target. A warning is logged; the operator removes them.
+- Scans of a backup directory treat only the exact name `backup-YYYYMMDD-HHMMSS` as a backup, so a target directory such as `backup-pi` is never pruned as a corrupt backup. A target named exactly that shape is rejected.
 - No per-target override, migration, or new environment variable.
 
 ## Impact
