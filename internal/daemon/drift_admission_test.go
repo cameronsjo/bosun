@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -268,8 +269,7 @@ func TestTriggerReconcile_ReturnsContextErrorWhileWaitingForDrift(t *testing.T) 
 
 	select {
 	case err := <-triggerErr:
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, context.DeadlineExceeded), "got %v", err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	case <-time.After(driftAdmissionWait):
 		finish()
 		t.Fatal("TriggerReconcile ignored its context while waiting for drift")
@@ -435,7 +435,9 @@ func TestDaemonRunDriftCheck_BreakerReusesDriftSnapshot(t *testing.T) {
 			}
 			mock.ContainerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 				project, ok := projectByName[name]
-				require.True(t, ok, "unexpected inspect of %q", name)
+				if !ok {
+					return client.ContainerInspectResult{}, fmt.Errorf("unexpected inspect of %q", name)
+				}
 				// The inspected container is a replacement: its full ID differs
 				// from the one in the drift listing.
 				return client.ContainerInspectResult{Container: container.InspectResponse{
