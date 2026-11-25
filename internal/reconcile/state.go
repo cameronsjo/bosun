@@ -180,6 +180,12 @@ type RestartTrackingEntry struct {
 	// sibling with another number never inherits this entry. Empty on state
 	// written before it was recorded, and for containers without the label.
 	ContainerNumber string `json:"container_number,omitempty"`
+	// RecoveredSinceAlert records, on every tripped entry of a service, that a
+	// container of the service recovered after the service's trip alert while
+	// another container stayed tripped. When the last tripped entry later goes
+	// away without recovering, this flag is what lets the service be reported
+	// resolved. It is reset when the service trips again.
+	RecoveredSinceAlert bool `json:"recovered_since_alert,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.

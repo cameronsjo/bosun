@@ -297,6 +297,118 @@ func TestRunRestartBreaker_ServiceRemovedClearsTrippedEntry(t *testing.T) {
 	assert.NotContains(t, result.Updated, "web")
 }
 
+// TestRunRestartBreaker_RecoverThenClearReportsResolvedOnce: replicas 1 and 2
+// are tripped. Replica 1 recovers while replica 2 is still tripped (suppressed),
+// and in a later tick replica 2 is removed with no replacement and cleared
+// quietly. Nothing is tripped any more, so the service is reported resolved
+// exactly once, on the tick of the clear. On e2ecfd3 the suppressed recovery was
+// not remembered anywhere: the quiet clear only deleted the entry, so no tick
+// ever reported the service resolved.
+func TestRunRestartBreaker_RecoverThenClearReportsResolvedOnce(t *testing.T) {
+	h := newBreakerHarness(t)
+	h.items = []container.Summary{
+		h.replica("test-web-1", "running", 1000),
+		h.replica("test-web-2", "running", 2000),
+	}
+	h.state.RestartTracking = map[string]RestartTrackingEntry{
+		"web":                            h.tripped("test-web-1", 9, true),
+		"web#" + h.shortID("test-web-2"): h.tripped("test-web-2", 9, false),
+	}
+	h.counts["test-web-1"] = 9  // unchanged: stable, recovers
+	h.counts["test-web-2"] = 12 // still looping
+
+	first, _ := h.cycle()
+	assert.Empty(t, first.Resolved, "replica 2 is still tripped, so the recovery is suppressed")
+	assert.True(t, first.Updated["web#"+h.shortID("test-web-2")].RecoveredSinceAlert, "the suppressed recovery is remembered on the tripped entry")
+
+	h.items = []container.Summary{h.replica("test-web-1", "running", 1000)} // replica 2 is removed
+	second, _ := h.cycle()
+	assert.Equal(t, []string{"web"}, second.Resolved, "the last tripped entry went away after a recovery")
+	assert.False(t, serviceTripped(second.Updated, "web"))
+	assert.NotContains(t, second.Updated, "web#"+h.shortID("test-web-2"))
+
+	third, _ := h.cycle()
+	assert.Empty(t, third.Resolved, "the resolved alert is sent once")
+}
+
+// TestRunRestartBreaker_ClearWithoutRecoveryReportsNothing: both replicas are
+// tripped and both are removed with no replacement, in separate ticks. No
+// container recovered, so no resolved alert is sent for either clear.
+func TestRunRestartBreaker_ClearWithoutRecoveryReportsNothing(t *testing.T) {
+	h := newBreakerHarness(t)
+	h.items = []container.Summary{h.replica("test-web-1", "exited", 1000)} // replica 2 is already gone
+	h.state.RestartTracking = map[string]RestartTrackingEntry{
+		"web":                            h.tripped("test-web-1", 9, false),
+		"web#" + h.shortID("test-web-2"): h.tripped("test-web-2", 9, false),
+	}
+
+	first, _ := h.cycle()
+	assert.Empty(t, first.Resolved)
+	assert.NotContains(t, first.Updated, "web#"+h.shortID("test-web-2"), "replica 2's entry is cleared")
+	assert.True(t, first.Updated["web"].Tripped, "replica 1 is still there and still tripped")
+
+	h.items = nil // replica 1 is removed too
+	second, _ := h.cycle()
+	assert.Empty(t, second.Resolved, "no container recovered, so clearing reports nothing")
+	assert.Empty(t, second.Updated)
+}
+
+// TestRunRestartBreaker_ClearThenRecoverReportsResolved: the reverse order of
+// RecoverThenClear. Replica 2 is cleared quietly while replica 1 is still
+// tripped, and replica 1 then recovers: that last recovery reports the service
+// resolved. This order already worked before the flag and must keep working.
+func TestRunRestartBreaker_ClearThenRecoverReportsResolved(t *testing.T) {
+	h := newBreakerHarness(t)
+	h.items = []container.Summary{h.replica("test-web-1", "running", 1000)} // replica 2 is already gone
+	h.state.RestartTracking = map[string]RestartTrackingEntry{
+		"web":                            h.tripped("test-web-1", 9, false),
+		"web#" + h.shortID("test-web-2"): h.tripped("test-web-2", 9, false),
+	}
+	h.counts["test-web-1"] = 9
+
+	first, _ := h.cycle()
+	assert.Empty(t, first.Resolved, "replica 1 has only started its stability interval")
+	assert.NotContains(t, first.Updated, "web#"+h.shortID("test-web-2"))
+	assert.True(t, first.Updated["web"].Tripped)
+
+	second, _ := h.cycle()
+	assert.Equal(t, []string{"web"}, second.Resolved)
+	assert.False(t, serviceTripped(second.Updated, "web"))
+}
+
+// TestRunRestartBreaker_TripResetsRecoveredSinceAlert: replica 2 is tripped with
+// a recovery remembered from an earlier alert, and replica 3 then trips. The new
+// trip alert starts a new cycle, so the remembered recovery no longer counts.
+func TestRunRestartBreaker_TripResetsRecoveredSinceAlert(t *testing.T) {
+	h := newBreakerHarness(t)
+	h.items = []container.Summary{
+		h.replica("test-web-2", "running", 2000),
+		h.replica("test-web-3", "restarting", 3000),
+	}
+	remembered := h.tripped("test-web-2", 9, false)
+	remembered.RecoveredSinceAlert = true
+	now := time.Now()
+	h.state.RestartTracking = map[string]RestartTrackingEntry{
+		"web#" + h.shortID("test-web-2"): remembered,
+		"web#" + h.shortID("test-web-3"): {
+			RestartCount:         2,
+			CheckedAt:            now.Add(-3 * time.Minute),
+			BaselineRestartCount: 2,
+			BaselineAt:           now.Add(-8 * time.Minute),
+			ContainerID:          h.shortID("test-web-3"),
+			ContainerNumber:      "3",
+		},
+	}
+	h.counts["test-web-2"] = 9
+	h.counts["test-web-3"] = 8 // six restarts on the baseline: trips
+
+	result, _ := h.cycle()
+
+	assert.Equal(t, []string{"web"}, result.Tripped)
+	assert.True(t, result.Updated["web#"+h.shortID("test-web-3")].Tripped)
+	assert.False(t, result.Updated["web#"+h.shortID("test-web-2")].RecoveredSinceAlert, "a new trip resets the remembered recovery")
+}
+
 // TestRunRestartBreaker_ReplacementContainerResolvesAfterGraceSample: a deploy
 // recreates the tripped container (same container number, new ID). The entry
 // stays tripped for the first sample on the replacement and resolves on the

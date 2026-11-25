@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -103,6 +104,7 @@ func evaluateRestartBreaker(
 					Tripped:              true,
 					TrippedAt:            prev.TrippedAt,
 					StabilityPending:     true,
+					RecoveredSinceAlert:  prev.RecoveredSinceAlert,
 				}
 			}
 			continue
@@ -444,6 +446,18 @@ func serviceTripped(tracking map[string]RestartTrackingEntry, service string) bo
 	return false
 }
 
+// setRecoveredSinceAlert sets the recovered-since-alert flag on every tripped
+// entry of the service. The flag describes the service, so all its tripped
+// entries carry the same value and any one of them can be cleared first.
+func setRecoveredSinceAlert(tracking map[string]RestartTrackingEntry, service string, recovered bool) {
+	for key, entry := range tracking {
+		if entry.Tripped && belongsToService(key, service) {
+			entry.RecoveredSinceAlert = recovered
+			tracking[key] = entry
+		}
+	}
+}
+
 // assignTrackKeys gives every observed container the key of its tracking entry,
 // so each container has its own baseline.
 //
@@ -678,6 +692,11 @@ func RunRestartBreaker(
 	for _, svc := range actual {
 		present[svc.Name] = true
 	}
+	//
+	// A service that had a container recover since its trip alert (the flag on
+	// its tripped entries) is reported resolved once its last tripped entry goes
+	// away this way; clearedRecovered remembers which services qualify.
+	clearedRecovered := make(map[string]bool)
 	for _, key := range sortedTrackingKeys(state.RestartTracking) {
 		prev := state.RestartTracking[key]
 		if !prev.Tripped || prev.ContainerID == "" {
@@ -692,6 +711,7 @@ func RunRestartBreaker(
 			continue
 		}
 		delete(result.Updated, key)
+		clearedRecovered[service] = clearedRecovered[service] || prev.RecoveredSinceAlert
 		logger.Info().
 			Str("service", service).
 			Str("container_id", prev.ContainerID).
@@ -705,9 +725,13 @@ func RunRestartBreaker(
 	// A service is resolved only when none of its containers is still tripped:
 	// one replica recovering must not report a service resolved while another
 	// replica is still tripped. A later resolution of the last one reports it.
+	// The suppressed recovery is remembered on the service's still-tripped
+	// entries, so the resolved alert is not lost if the last of them is cleared
+	// quietly in a later tick (recover, then clear).
 	var resolved []string
 	for _, service := range serviceNames(keyed, result.Resolved) {
 		if serviceTripped(result.Updated, service) {
+			setRecoveredSinceAlert(result.Updated, service, true)
 			logger.Debug().
 				Str("service", service).
 				Msg("Restart breaker: a container recovered but another container of the service is still tripped; not reporting the service resolved")
@@ -715,6 +739,31 @@ func RunRestartBreaker(
 		}
 		resolved = append(resolved, service)
 	}
+
+	// A service that trips again starts a new alert cycle: a recovery before this
+	// trip alert no longer counts.
+	for _, service := range result.Tripped {
+		setRecoveredSinceAlert(result.Updated, service, false)
+	}
+
+	// The last tripped entry of a service went away without recovering. Report
+	// the service resolved only when a container recovered since its trip alert;
+	// when every entry was cleared quietly there is nothing to report.
+	clearedServices := make([]string, 0, len(clearedRecovered))
+	for service := range clearedRecovered {
+		clearedServices = append(clearedServices, service)
+	}
+	sort.Strings(clearedServices)
+	for _, service := range clearedServices {
+		if !clearedRecovered[service] || serviceTripped(result.Updated, service) || slices.Contains(resolved, service) {
+			continue
+		}
+		logger.Info().
+			Str("service", service).
+			Msg("Restart breaker: last tripped container is gone and a container of the service recovered since the trip alert; reporting the service resolved")
+		resolved = append(resolved, service)
+	}
+	sort.Strings(resolved)
 	result.Resolved = resolved
 
 	// Stop tripped containers (best-effort: attempt all, collect errors). Stop
