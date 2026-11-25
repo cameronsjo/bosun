@@ -116,14 +116,13 @@ rm secrets.yaml  # Don't commit unencrypted!
 
 ```yaml
 # compose/myapp.yml.tmpl
-{{- $secrets := fromJson (env "SOPS_SECRETS") -}}
 services:
   myapp:
     image: myapp:latest
     container_name: myapp
     restart: unless-stopped
     environment:
-      DB_PASSWORD: {{ $secrets.apps.myapp.db_password }}
+      DB_PASSWORD: {{ .apps.myapp.db_password }}
 ```
 
 ### Push to GitHub
@@ -264,7 +263,6 @@ You should see:
 
 ```yaml
 # compose/homepage.yml.tmpl
-{{- $secrets := fromJson (env "SOPS_SECRETS") -}}
 services:
   homepage:
     image: ghcr.io/gethomepage/homepage:latest

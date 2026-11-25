@@ -704,11 +704,10 @@ export BOSUN_TEMPLATE_INCLUDE_DIR=/srv/bosun/includes
 
 ### Available Template Functions
 
-The template engine provides Go's standard template functions plus all [Sprig functions](https://masterminds.github.io/sprig/). Commonly used:
+The template engine provides Go's standard template functions plus the [Sprig functions](https://masterminds.github.io/sprig/) except `env`, `expandenv`, and `getHostByName`. Those three read the daemon's environment or the network, so a template that calls one fails to parse. Template values come from the decrypted SOPS secrets in the data context (`{{ .apps.myapp.db_password }}`). Commonly used:
 
 | Function | Description |
 |----------|-------------|
-| `env "VAR"` | Get environment variable |
 | `include "path"` | Read an allowlisted file as text |
 | `fromJsonFile "path"` | Read and parse an allowlisted JSON file |
 | `fromJson "..."` | Parse JSON string |

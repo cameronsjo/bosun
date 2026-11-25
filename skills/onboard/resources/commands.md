@@ -209,7 +209,7 @@ bosun render -o /tmp/rendered unraid/    # Render to output directory
 
 Templates have access to:
 - Secrets data via `{{ . }}` (the root context)
-- All Sprig template functions
+- Sprig template functions, except `env`, `expandenv`, and `getHostByName` (a template that calls one fails to parse)
 - Custom functions: `include`, `fromJsonFile`
 
 `include` and `fromJsonFile` are confined to `<infraDir>/templates` by default.
