@@ -657,8 +657,10 @@ func TestRunDryRunProtectionFailurePrecedesSuccessStateAndAlert(t *testing.T) {
 	assert.ErrorContains(t, err, "finalize dry-run staging evidence")
 	assert.ErrorContains(t, err, "dry-run harden injected")
 	assert.ErrorContains(t, err, "dry-run delete injected")
+	// A dry run persists no state at any boundary, so the state assertions hold
+	// trivially; the success alert is the boundary this test still orders.
 	state := LoadState(cfg.StateFile)
-	assert.Empty(t, state.LastDeployedCommit, "security finalization must precede the success state boundary")
+	assert.Empty(t, state.LastDeployedCommit)
 	assert.Zero(t, state.DeployCount)
 	assert.Zero(t, alerter.deploySuccessCalls, "security finalization must precede the success alert boundary")
 }
