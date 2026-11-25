@@ -16,9 +16,9 @@ from the decrypted secrets map, not the process environment.
   explicit allowlist of Sprig functions that excludes `env`, `expandenv`,
   and `getHostByName`. A template calling one fails to parse and is not
   rendered.
-- `bosun render` has no requirement of its own in the reconcile spec. The
-  delta below covers reconcile templates; `bosun render` uses the
-  same allowlisted function map, and that is enforced by code and tests only.
+- No spec on `main` covers `bosun render`. The delta below covers reconcile
+  templates only; `bosun render` uses the same allowlisted function map, and
+  that is enforced by code and tests, not by a requirement.
 - Templates that read secrets with `fromJson (env "SOPS_SECRETS")` (a
   pattern earlier docs taught, which current bosun no longer populates)
   must read the data context directly: `{{ .apps.myapp.db_password }}`.
@@ -30,5 +30,11 @@ from the decrypted secrets map, not the process environment.
   Template Rendering is unchanged, and its Sprig sentence now reads through
   the allowlist)
 - Affected code: `internal/reconcile/template.go`, `internal/cmd/render.go`
+  (allowlist; the code PR also restores the renderer's include directory on
+  every return path)
+- Affected docs and examples: `examples/compose.yml.tmpl`,
+  `docs/guides/unraid-setup.md`, `docs/gitops.md`, `docs/migration.md`,
+  `docs/helm-alignment.md`, `docs/security.md`, and the onboard skill
+  resources
 - Not closed here: compose `${VAR}` interpolation and repo-reloaded hooks
   also reach the daemon environment; tracked separately.
