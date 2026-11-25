@@ -103,7 +103,7 @@ func TestTemplateFunctionAllowlist_GoldenList(t *testing.T) {
 	})
 
 	t.Run("allowlist has the reviewed size", func(t *testing.T) {
-		assert.Len(t, allowedSprigFuncs, 206, "Sprig v3.3.0 has 209 functions; 3 are denied")
+		assert.Len(t, allowedSprigFuncs, 208, "Sprig v3.3.0 has 211 functions; 3 are denied")
 	})
 
 	t.Run("denied functions are not allowlisted", func(t *testing.T) {
