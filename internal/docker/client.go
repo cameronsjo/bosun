@@ -25,6 +25,8 @@ type statsJSON struct {
 			PercpuUsage []uint64 `json:"percpu_usage"`
 		} `json:"cpu_usage"`
 		SystemUsage uint64 `json:"system_cpu_usage"`
+		// OnlineCPUs is set on every host; PercpuUsage is omitted on cgroup v2.
+		OnlineCPUs uint32 `json:"online_cpus"`
 	} `json:"cpu_stats"`
 	PreCPUStats struct {
 		CPUUsage struct {
@@ -434,9 +436,9 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 	}
 
 	// Calculate CPU percentage
-	cpuDelta := float64(v.CPUStats.CPUUsage.TotalUsage - v.PreCPUStats.CPUUsage.TotalUsage)
-	systemDelta := float64(v.CPUStats.SystemUsage - v.PreCPUStats.SystemUsage)
-	cpuPercent := calculateCPUPercent(cpuDelta, systemDelta, len(v.CPUStats.CPUUsage.PercpuUsage))
+	cpuDelta := counterDelta(v.CPUStats.CPUUsage.TotalUsage, v.PreCPUStats.CPUUsage.TotalUsage)
+	systemDelta := counterDelta(v.CPUStats.SystemUsage, v.PreCPUStats.SystemUsage)
+	cpuPercent := calculateCPUPercent(cpuDelta, systemDelta, cpuCount(v.CPUStats.OnlineCPUs, len(v.CPUStats.CPUUsage.PercpuUsage)))
 
 	// Calculate memory percentage
 	memPercent := calculateMemPercent(v.MemoryStats.Usage, v.MemoryStats.Limit)
@@ -503,6 +505,29 @@ func parseHealthFromStatus(status string) string {
 	default:
 		return ""
 	}
+}
+
+// cpuCount returns the number of CPUs to scale a CPU percentage by.
+// online_cpus is preferred because cgroup v2 hosts omit percpu_usage; the
+// per-CPU list length is the fallback for older daemons. Returns 0 when the
+// sample carries neither, which calculateCPUPercent reports as 0% rather than
+// guessing a core count.
+func cpuCount(onlineCPUs uint32, percpuLen int) int {
+	if onlineCPUs > 0 {
+		return int(onlineCPUs)
+	}
+	return percpuLen
+}
+
+// counterDelta returns cur - prev as a float64, or 0 when the counter did not
+// advance. Docker's CPU counters are uint64, so subtracting after a counter
+// reset (cur < prev) would wrap to about 1.8e19 instead of hitting the
+// non-positive-delta guard in calculateCPUPercent.
+func counterDelta(cur, prev uint64) float64 {
+	if cur <= prev {
+		return 0
+	}
+	return float64(cur - prev)
 }
 
 // calculateCPUPercent computes the CPU usage percentage from delta values.

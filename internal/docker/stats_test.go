@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -258,6 +259,46 @@ func TestParseHealthFromStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := parseHealthFromStatus(tt.status)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCPUCount(t *testing.T) {
+	tests := []struct {
+		name       string
+		onlineCPUs uint32
+		percpuLen  int
+		want       int
+	}{
+		{name: "online_cpus only (cgroup v2)", onlineCPUs: 4, percpuLen: 0, want: 4},
+		{name: "percpu_usage only (older daemon)", onlineCPUs: 0, percpuLen: 8, want: 8},
+		{name: "online_cpus wins when both are set", onlineCPUs: 4, percpuLen: 8, want: 4},
+		{name: "neither is set", onlineCPUs: 0, percpuLen: 0, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, cpuCount(tt.onlineCPUs, tt.percpuLen))
+		})
+	}
+}
+
+func TestCounterDelta(t *testing.T) {
+	tests := []struct {
+		name string
+		cur  uint64
+		prev uint64
+		want float64
+	}{
+		{name: "counter advanced", cur: 300, prev: 100, want: 200},
+		{name: "counter unchanged", cur: 100, prev: 100, want: 0},
+		{name: "counter reset", cur: 100, prev: 300, want: 0},
+		{name: "reset to zero", cur: 0, prev: math.MaxUint64, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, counterDelta(tt.cur, tt.prev))
 		})
 	}
 }

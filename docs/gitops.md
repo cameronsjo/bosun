@@ -341,7 +341,7 @@ Labels are preferred because they are authoritative and unambiguous. For contain
 
 ### Image Comparison
 
-Images are normalized before comparison: bare names (e.g., `nginx`) are treated as `nginx:latest`. Digest references (`nginx@sha256:...`) are compared exactly.
+Images are normalized before comparison: bare names (e.g., `nginx`) are treated as `nginx:latest`, including names whose registry carries a port (`localhost:5000/app` is `localhost:5000/app:latest`). Digest references (`nginx@sha256:...`) are compared exactly.
 
 ### Daemon Drift Loop
 
