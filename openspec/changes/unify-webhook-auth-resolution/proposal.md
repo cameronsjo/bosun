@@ -13,16 +13,17 @@ No spec stated any of this. The open changes cover the fail-closed gate for a mi
 ## What Changes
 
 - The daemon, the receiver (after its `--secret` flag), and `bosun validate` SHALL resolve the secret in one order: `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET`.
-- The literal `change-me` SHALL count as no secret on both servers, so the existing fail-closed `403` applies to it.
+- A placeholder SHALL count as no secret on both servers, so the existing fail-closed `403` applies to it. After trimming whitespace and ignoring case, that means `change-me`, or the example value the `bosun init` env template writes. A whitespace-only value counts as none too.
 - When `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` are set to different values, every trigger endpoint on both servers SHALL answer `403`, even with `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true`. Each server SHALL log an error naming both variables, never their values. No sender can know which secret to sign with, so neither is picked. A receiver `--secret` flag settles the conflict for the receiver. `bosun validate` reports the conflict as an error.
+- The daemon's socket `GET /config` SHALL report a conflict alongside the secret (`webhook_secret_conflict`). A receiver that would adopt the daemon's secret, either through `--fetch-secret` or because it has no local secret, SHALL then fail closed the same way, whatever its own opt-out says (cameronsjo/bosun#837). Without this, the empty secret a conflicting daemon sends would read as "no secret configured".
 - Both generic `/webhook` endpoints SHALL read the signature from the first present of `X-Signature`, `X-Hub-Signature-256`, `X-Signature-256`. `/webhook/github` and `/webhook/manual` keep their single header.
 
 ## Impact
 
 - Affected specs: `daemon-security`. ADDED: Webhook secret resolves one way; Conflicting webhook secrets fail closed; Generic webhook signature header order.
-- Affected code: `internal/daemon/webhook_guard.go`, `internal/daemon/daemon.go`, `internal/daemon/server.go`, `internal/cmd/webhook.go`, `internal/cmd/validate.go`, `internal/cmd/init.go`, the Unraid template, and their tests. The implementation is cameronsjo/bosun#833.
+- Affected code: `internal/daemon/webhook_guard.go`, `internal/daemon/daemon.go`, `internal/daemon/server.go`, `internal/daemon/socket.go` and `pure.go` (the config response), `internal/cmd/webhook.go`, `internal/cmd/validate.go`, `internal/cmd/init.go`, the Unraid template, and their tests. The implementation is cameronsjo/bosun#833.
 - **Breaking:**
-  - A deployment whose secret is `change-me` gets `403` on every trigger unless the opt-out is set.
+  - A deployment whose secret is a placeholder (`change-me` in any case, padded or not, or the init example value) gets `403` on every trigger unless the opt-out is set.
   - A deployment with two differing secret variables gets `403` on every trigger.
   - On the receiver, a generic request with an invalid `X-Signature` is rejected even when its `X-Hub-Signature-256` is valid.
 
@@ -36,7 +37,8 @@ These changes are unarchived, and each one ADDs to `daemon-security`. No base `d
 
 ## Limits
 
-When the daemon has a conflict it stores no secret, so its socket `GET /config` returns none. A receiver started with `--fetch-secret`, no secret of its own, and its own `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` would accept unsigned triggers. That needs an explicit opt-out on the receiver. Closing it would mean adding a conflict flag to the socket's config response, which is outside this change.
+- A daemon from before this change omits `webhook_secret_conflict`. A receiver reads the missing field as no conflict, which is the old behavior.
+- Two variables that differ only by whitespace still conflict: the values are compared exactly, because HMAC uses the exact bytes. The error message names whitespace as a likely cause.
 
 ## Scope
 
