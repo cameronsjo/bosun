@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/manifest"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -56,8 +57,13 @@ func runLint(cmd *cobra.Command, args []string) error {
 		ui.Error("Provisions directory not found")
 		errors++
 	} else {
-		files, _ := filepath.Glob(filepath.Join(provisionsDir, "*.yml"))
-		_, _ = ui.Green.Printf("* Found %d provisions\n", len(files))
+		count, listErr := countProvisions(provisionsDir)
+		if listErr != nil {
+			ui.Error("Cannot list provisions: %v", listErr)
+			errors++
+		} else {
+			_, _ = ui.Green.Printf("* Found %d provisions\n", count)
+		}
 	}
 
 	// Validate services
@@ -136,6 +142,16 @@ func runLint(cmd *cobra.Command, args []string) error {
 
 	_, _ = ui.Green.Println("* All manifests valid!")
 	return nil
+}
+
+// countProvisions returns how many provisions the directory holds, counting
+// .yml and .yaml files and a foo.yml/foo.yaml pair once.
+func countProvisions(provisionsDir string) (int, error) {
+	provisions, err := manifest.ListProvisions(provisionsDir)
+	if err != nil {
+		return 0, err
+	}
+	return len(provisions), nil
 }
 
 func validateServiceFile(filename string) bool {

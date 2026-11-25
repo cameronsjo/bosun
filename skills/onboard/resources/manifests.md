@@ -193,7 +193,7 @@ gatus:           # Gatus monitoring endpoints
 
 ### Writing Custom Provisions
 
-Create a YAML file in `manifest/provisions/`:
+Create a `.yml` or `.yaml` file in `manifest/provisions/` (if both `my-custom.yml` and `my-custom.yaml` exist, the `.yml` wins). The provision name, including any name under `includes:`, must resolve inside that directory: `../other` is rejected with `path traversal detected`. Within one provision's include graph, a provision included by more than one path (a diamond) is merged once, at its first occurrence, and only a true cycle (`a` includes `b`, `b` includes `a`) is an error. The containment check is on the path text and does not follow symlinks:
 
 ```yaml
 # manifest/provisions/my-custom.yml
