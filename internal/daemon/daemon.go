@@ -2073,6 +2073,11 @@ func (d *Daemon) IsReady() bool {
 	return d.ready
 }
 
+// Uptime returns how long the daemon has been running (O(1), no I/O).
+func (d *Daemon) Uptime() time.Duration {
+	return time.Since(startTime)
+}
+
 // setReady sets the readiness state and updates the Prometheus gauge.
 func (d *Daemon) setReady(ready bool) {
 	d.readyMu.Lock()

@@ -232,16 +232,35 @@ func (c *Client) GetContainerByName(ctx context.Context, name string) (*Containe
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Looking up container by name")
 
-	containers, err := c.ListContainers(ctx, false)
+	normalizedName := strings.TrimPrefix(name, "/")
+	filters := make(client.Filters).Add("name", normalizedName)
+	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: filters,
+	})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for lookup")
 		return nil, err
 	}
 
-	for _, ctr := range containers {
-		if ctr.Name == name {
+	for _, ctr := range listResult.Items {
+		ctrName := ""
+		if len(ctr.Names) > 0 {
+			ctrName = strings.TrimPrefix(ctr.Names[0], "/")
+		}
+		if ctrName == normalizedName {
+			info := ContainerInfo{
+				ID:      ctr.ID[:min(12, len(ctr.ID))],
+				Name:    ctrName,
+				Image:   ctr.Image,
+				State:   string(ctr.State),
+				Status:  ctr.Status,
+				Health:  parseHealthFromStatus(ctr.Status),
+				Created: time.Unix(ctr.Created, 0),
+				Labels:  ctr.Labels,
+			}
 			logger.Debug().Str(log.FieldContainer, name).Msg("Found container")
-			return &ctr, nil
+			return &info, nil
 		}
 	}
 
@@ -454,24 +473,51 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 
 // GetAllContainerStats returns stats for all running containers.
 // Containers that fail to return stats are logged and skipped.
+// Fetches run concurrently with a bounded worker semaphore so N containers
+// do not incur N sequential ~1s Docker stats round-trips.
 func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, error) {
 	containers, err := c.ListContainers(ctx, true)
 	if err != nil {
 		return nil, err
 	}
+	if len(containers) == 0 {
+		return []ContainerStats{}, nil
+	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	const maxConcurrentStats = 8
+	sem := make(chan struct{}, maxConcurrentStats)
+	results := make([]*ContainerStats, len(containers))
+
+	var wg sync.WaitGroup
+	for i, ctr := range containers {
+		wg.Add(1)
+		go func(idx int, name string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			s, statsErr := c.GetContainerStats(ctx, name)
+			if statsErr != nil {
+				logger.Debug().
+					Str(log.FieldContainer, name).
+					Err(statsErr).
+					Msg("Skipping container stats due to error")
+				return
+			}
+			results[idx] = s
+		}(i, ctr.Name)
+	}
+	wg.Wait()
+
 	stats := make([]ContainerStats, 0, len(containers))
-	for _, ctr := range containers {
-		s, err := c.GetContainerStats(ctx, ctr.Name)
-		if err != nil {
-			logger.Debug().
-				Str(log.FieldContainer, ctr.Name).
-				Err(err).
-				Msg("Skipping container stats due to error")
-			continue
+	for _, s := range results {
+		if s != nil {
+			stats = append(stats, *s)
 		}
-		stats = append(stats, *s)
 	}
 
 	return stats, nil

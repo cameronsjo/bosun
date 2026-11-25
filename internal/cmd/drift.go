@@ -207,6 +207,20 @@ func runMultiTargetDrift(targets []reconcile.Target) error {
 	stateDir := filepath.Dir(driftStateFile)
 	var unavailable []string
 
+	var (
+		liveClient      *docker.Client
+		liveIgnoreRules []reconcile.DriftIgnoreRule
+	)
+	if driftLive {
+		var err error
+		liveClient, err = docker.NewClient()
+		if err != nil {
+			ui.Fatal("Failed to connect to Docker: %v", err)
+		}
+		defer func() { _ = liveClient.Close() }()
+		liveIgnoreRules = loadDriftIgnoreRules()
+	}
+
 	for i, t := range targets {
 		if i > 0 {
 			fmt.Println()
@@ -229,7 +243,7 @@ func runMultiTargetDrift(targets []reconcile.Target) error {
 				continue
 			}
 			projectName := t.ProjectName
-			runLiveDriftCheckForTarget(state, sf, projectName)
+			runLiveDriftCheckForTargetWithClient(liveClient, liveIgnoreRules, state, sf, projectName)
 		} else {
 			printDriftHuman(state)
 		}
@@ -258,13 +272,27 @@ func runMultiTargetDriftJSON(targets []reconcile.Target) error {
 	out := multiTargetDriftJSON{Targets: make([]targetDriftJSON, 0, len(targets))}
 	var unavailable []string
 
+	var (
+		liveClient      *docker.Client
+		liveIgnoreRules []reconcile.DriftIgnoreRule
+	)
+	if driftLive {
+		var err error
+		liveClient, err = docker.NewClient()
+		if err != nil {
+			ui.Fatal("Failed to connect to Docker: %v", err)
+		}
+		defer func() { _ = liveClient.Close() }()
+		liveIgnoreRules = loadDriftIgnoreRules()
+	}
+
 	for _, t := range targets {
 		sf := reconcile.TargetStateFile(stateDir, t)
 		state := reconcile.LoadState(sf)
 
 		if driftLive && state.LastDeployedCommit != "" && len(state.DeclaredServices) > 0 {
 			projectName := t.ProjectName
-			state = runLiveDriftCollect(state, sf, projectName)
+			state = runLiveDriftCollectWithClient(liveClient, liveIgnoreRules, state, sf, projectName)
 		}
 
 		entry := targetDriftJSON{Target: t.Name}
@@ -296,14 +324,15 @@ func runLiveDriftCheck(state *reconcile.DeployState) error {
 	return printDriftStatus(state)
 }
 
-// runLiveDriftCheckForTarget performs a live check and prints human output for a specific target.
-func runLiveDriftCheckForTarget(state *reconcile.DeployState, stateFile, projectName string) {
+// runLiveDriftCheckForTargetWithClient performs a live check using a shared
+// Docker client and preloaded ignore rules, then prints human output.
+func runLiveDriftCheckForTargetWithClient(client *docker.Client, ignoreRules []reconcile.DriftIgnoreRule, state *reconcile.DeployState, stateFile, projectName string) {
 	if len(state.DeclaredServices) == 0 {
 		ui.Warning("No declared services in state file. Deploy first to populate declared state.")
 		return
 	}
 
-	state = runLiveDriftCollect(state, stateFile, projectName)
+	state = runLiveDriftCollectWithClient(client, ignoreRules, state, stateFile, projectName)
 	printDriftHuman(state)
 }
 
@@ -316,6 +345,10 @@ func runLiveDriftCollect(state *reconcile.DeployState, stateFile, projectName st
 	}
 	defer func() { _ = client.Close() }()
 
+	return runLiveDriftCollectWithClient(client, loadDriftIgnoreRules(), state, stateFile, projectName)
+}
+
+func runLiveDriftCollectWithClient(client *docker.Client, ignoreRules []reconcile.DriftIgnoreRule, state *reconcile.DeployState, stateFile, projectName string) *reconcile.DeployState {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -326,8 +359,6 @@ func runLiveDriftCollect(state *reconcile.DeployState, stateFile, projectName st
 
 	report := reconcile.CompareDrift(state.DeclaredServices, actual)
 
-	// Apply drift ignore rules from project config.
-	ignoreRules := loadDriftIgnoreRules()
 	if len(ignoreRules) > 0 {
 		preFilterCount := len(report.Items)
 		report.Items = reconcile.FilterIgnoredDriftItems(report.Items, ignoreRules)

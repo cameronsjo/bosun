@@ -696,12 +696,11 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		status := s.daemon.HealthStatus()
-		s.metrics.SetReady(status.Ready)
-		s.metrics.SetUptime(status.Uptime.Seconds())
+		s.metrics.SetReady(s.daemon.IsReady())
+		s.metrics.SetUptime(s.daemon.Uptime().Seconds())
 
-		if !status.LastReconcile.IsZero() {
-			s.metrics.SetLastReconcileTime(float64(status.LastReconcile.Unix()))
+		if lastReconcile, _ := s.daemon.LastReconcile(); !lastReconcile.IsZero() {
+			s.metrics.SetLastReconcileTime(float64(lastReconcile.Unix()))
 		}
 
 		next.ServeHTTP(w, r)
