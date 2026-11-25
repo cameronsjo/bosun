@@ -359,7 +359,7 @@ A reconcile trigger that arrives while a drift check runs waits for that check t
 
 Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
 
-**Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only.** It still detects drift, logs it, records the target's drift status for the status views, and updates metrics. It does not save the state file, run the restart circuit breaker (so no container is stopped), consume a self-heal attempt or trigger a reconcile, or send a drift, resolution, or breaker alert. Dedup and cooldown state could not persist across ticks, so alerts would repeat every interval.
+**Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only.** It still detects drift, logs it, and updates metrics, and it keeps the last result in memory: `GET /api/drift` (default target) and the per-target `drift` record in detailed status serve that observation (status, items, `checked_at`), not the state file, whose drift fields stay frozen at the last real run. Before the first dry-run tick they report `unknown` with no items. `bosun drift` reads the state file and therefore shows the frozen record. The tick does not save the state file, run the restart circuit breaker (so no container is stopped), consume a self-heal attempt or trigger a reconcile, or send a drift, resolution, or breaker alert. Dedup and cooldown state could not persist across ticks, so alerts would repeat every interval.
 
 #### Restart Circuit Breaker
 

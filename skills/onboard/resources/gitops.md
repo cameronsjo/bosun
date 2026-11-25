@@ -635,7 +635,7 @@ Drift is the difference between what you declared (in your deploy state) and wha
 
 A periodic drift check skips while a reconciliation runs or a reconcile trigger is waiting. A trigger that arrives during a drift check waits for that check to finish, then starts. Status endpoints are never blocked by a running drift check.
 
-Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only: it detects, logs, records the drift status and metrics, but saves no state, runs no restart breaker (no container is stopped), triggers no self-heal, and sends no drift, resolution, or breaker alert.
+Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only: it detects, logs, and updates metrics, and keeps its last result in memory: `GET /api/drift` (default target) and the per-target `drift` status serve that observation (`unknown` with no items before the first tick), while the state file's drift fields stay frozen at the last real run (so `bosun drift` shows the frozen record). It saves no state, runs no restart breaker (no container is stopped), triggers no self-heal, and sends no drift, resolution, or breaker alert.
 
 ### Drift Types
 

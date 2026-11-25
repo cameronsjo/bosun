@@ -337,15 +337,29 @@ func (d *Daemon) handleAPIDrift(w http.ResponseWriter, r *http.Request) {
 
 	state := reconcile.LoadState(stateFile)
 
-	resp := APIDriftResponse{
-		Status:         computeDriftStatus(len(state.DriftItems), state.LastDeployedCommit),
-		DeclaredCount:  len(state.DeclaredServices),
-		DriftItemCount: len(state.DriftItems),
-		Items:          convertDriftItems(state.DriftItems),
+	// A dry-run daemon saves no state, so the file's drift fields are frozen at
+	// the last real run. Serve the daemon's own observation of the default target
+	// instead (nothing until its first tick) rather than stale items.
+	driftItems, driftCheckedAt := state.DriftItems, state.DriftCheckedAt
+	status := computeDriftStatus(len(driftItems), state.LastDeployedCommit)
+	if d.config.ReconcileConfig.DryRun {
+		driftItems, driftCheckedAt = nil, time.Time{}
+		status = "unknown" // no observation yet: do not claim clean without data
+		if observed, ok := d.observedDriftFor(reconcile.DefaultTargetName); ok {
+			driftItems, driftCheckedAt = observed.items, observed.checkedAt
+			status = computeDriftStatus(len(driftItems), state.LastDeployedCommit)
+		}
 	}
 
-	if !state.DriftCheckedAt.IsZero() {
-		resp.CheckedAt = &state.DriftCheckedAt
+	resp := APIDriftResponse{
+		Status:         status,
+		DeclaredCount:  len(state.DeclaredServices),
+		DriftItemCount: len(driftItems),
+		Items:          convertDriftItems(driftItems),
+	}
+
+	if !driftCheckedAt.IsZero() {
+		resp.CheckedAt = &driftCheckedAt
 	}
 
 	w.Header().Set("Content-Type", "application/json")

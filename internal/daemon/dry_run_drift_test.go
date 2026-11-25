@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,9 +62,24 @@ func TestRunDriftCheck_DryRunObservesOnly(t *testing.T) {
 
 			// "db" is declared but not running (critical drift). "web" is running
 			// and has restarted five times since its baseline, which trips the breaker.
+			//
+			// The persisted state also carries a stale drift record from an earlier
+			// real run: two items and an old timestamp, and an alert marker for
+			// "cache", which is no longer drifting. A dry run must neither serve
+			// those items in its status views nor send a resolution alert for them.
 			stateFile := rcfg.StateFile
+			staleCheckedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+			staleItems := []reconcile.DriftItem{
+				{Service: "cache", Type: reconcile.DriftMissing, Declared: "redis:7"},
+				{Service: "queue", Type: reconcile.DriftMissing, Declared: "nats:2"},
+			}
 			require.NoError(t, reconcile.SaveState(stateFile, &reconcile.DeployState{
 				LastDeployedCommit: "abc123",
+				DriftCheckedAt:     staleCheckedAt,
+				DriftItems:         staleItems,
+				DriftAlertedItems: map[string]time.Time{
+					reconcile.DriftAlertKey(staleItems[0]): time.Now().Add(-time.Hour),
+				},
 				DeclaredServices: []reconcile.DeclaredService{
 					{Name: "web", Image: "nginx:latest"},
 					{Name: "db", Image: "postgres:16"},
@@ -107,9 +126,41 @@ func TestRunDriftCheck_DryRunObservesOnly(t *testing.T) {
 			after, err := os.ReadFile(stateFile)
 			require.NoError(t, err)
 
+			// Both status surfaces report this tick's observation, one item (db) with
+			// a fresh timestamp, never the two stale persisted items. On the original
+			// code the dry-run row served the frozen file: two items, the old time.
+			targets, snapErr := d.targetSnapshot()
+			require.NoError(t, snapErr)
+			statuses := d.targetHealthStatuses(targets)
+			require.Len(t, statuses, 1)
+			assert.Equal(t, "drifted", statuses[0].Drift.Status)
+			assert.Equal(t, 1, statuses[0].Drift.Items, "the per-target record serves the current observation")
+			assert.True(t, statuses[0].Drift.CheckedAt.After(staleCheckedAt))
+
+			mux := http.NewServeMux()
+			d.RegisterAPIRoutes(mux)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/drift", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			var api APIDriftResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &api))
+			assert.Equal(t, "drifted", api.Status)
+			assert.Equal(t, 1, api.DriftItemCount)
+			require.Len(t, api.Items, 1)
+			assert.Equal(t, "db", api.Items[0].Service)
+			require.NotNil(t, api.CheckedAt)
+			assert.True(t, api.CheckedAt.After(staleCheckedAt))
+
 			if !tt.dryRun {
 				assert.Equal(t, []string{"homelab-web-1-long-id"}, stopped, "control: the breaker stops the looping container")
 				assert.NotEmpty(t, provider.alerts, "control: drift and breaker alerts are sent")
+				var resolved int
+				for _, sent := range provider.alerts {
+					if strings.Contains(sent.Title, "Drift Resolved") {
+						resolved++
+					}
+				}
+				assert.Equal(t, 1, resolved, "control: the now-clean service gets a resolution alert, so the dry-run row's silence is not vacuous")
 				assert.Equal(t, int32(1), triggers.Load(), "control: self-heal triggers a reconcile")
 				assert.NotEqual(t, string(before), string(after), "control: the tick saves drift state")
 				return
@@ -125,4 +176,42 @@ func TestRunDriftCheck_DryRunObservesOnly(t *testing.T) {
 			assert.Equal(t, "drifted", status.driftStatus)
 		})
 	}
+}
+
+// TestDryRunStatusViewsBeforeFirstTick pins that a dry-run daemon does not serve
+// the frozen persisted drift record before its first tick: the file still holds
+// items from an earlier real run, and reporting them (or "clean") would claim a
+// current check that never happened. It fails on the code before the observation
+// was kept in memory, which served those two stale items.
+func TestDryRunStatusViewsBeforeFirstTick(t *testing.T) {
+	d := newAlertDaemon(t, &testAlertProvider{})
+	d.config.ReconcileConfig.DryRun = true
+	require.NoError(t, reconcile.SaveState(d.config.ReconcileConfig.StateFile, &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DriftCheckedAt:     time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		DriftItems: []reconcile.DriftItem{
+			{Service: "cache", Type: reconcile.DriftMissing},
+			{Service: "queue", Type: reconcile.DriftMissing},
+		},
+	}))
+
+	targets, snapErr := d.targetSnapshot()
+	require.NoError(t, snapErr)
+	statuses := d.targetHealthStatuses(targets)
+	require.Len(t, statuses, 1)
+	assert.Equal(t, "unknown", statuses[0].Drift.Status)
+	assert.Zero(t, statuses[0].Drift.Items)
+	assert.True(t, statuses[0].Drift.CheckedAt.IsZero())
+
+	mux := http.NewServeMux()
+	d.RegisterAPIRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/drift", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var api APIDriftResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &api))
+	assert.Equal(t, "unknown", api.Status)
+	assert.Zero(t, api.DriftItemCount)
+	assert.Empty(t, api.Items)
+	assert.Nil(t, api.CheckedAt)
 }
