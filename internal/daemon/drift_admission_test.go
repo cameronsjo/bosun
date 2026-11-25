@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 )
@@ -379,6 +380,93 @@ func TestDaemonRunDriftCheck_SelfHealUsesRealAdmission(t *testing.T) {
 	assert.Zero(t, d.reconcileWaiters)
 	assert.False(t, d.reconciling)
 	d.reconcileMu.Unlock()
+}
+
+// TestDaemonRunDriftCheck_BreakerReusesDriftSnapshot pins #793 item 2b: one
+// container listing per local target per tick, shared by the drift comparison
+// and the restart breaker, while the breaker still stops the container ID it
+// inspected rather than anything carried in the older listing.
+func TestDaemonRunDriftCheck_BreakerReusesDriftSnapshot(t *testing.T) {
+	tests := []struct {
+		name    string
+		targets []reconcile.Target
+	}{
+		{"one target", []reconcile.Target{{Name: "alpha", ProjectName: "stack-alpha"}}},
+		{"two targets", []reconcile.Target{
+			{Name: "alpha", ProjectName: "stack-alpha"},
+			{Name: "beta", ProjectName: "stack-beta"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _ := targetStatusTestDaemon(t, tt.targets)
+			d.config.ReconcileConfig.RestartBreakerEnabled = true
+			d.config.ReconcileConfig.RestartThreshold = 5
+			d.config.ReconcileConfig.RestartWindow = 10 * time.Minute
+
+			var listed []container.Summary
+			for _, target := range d.targets {
+				saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
+					LastDeployedCommit: target.Name + "-commit",
+					DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx:latest"}},
+					RestartTracking: map[string]reconcile.RestartTrackingEntry{
+						"web": {RestartCount: 5, CheckedAt: time.Now().Add(-3 * time.Minute)},
+					},
+				})
+				listed = append(listed, dockertest.MakeTestContainer(
+					target.Name+"-listed", target.ProjectName+"-web-1", "nginx:latest", "running", target.ProjectName, "web",
+				))
+			}
+
+			projectByName := make(map[string]string, len(d.targets))
+			for _, target := range d.targets {
+				projectByName[target.ProjectName+"-web-1"] = target.ProjectName
+			}
+
+			var mu sync.Mutex
+			var stopped []string
+			var lists int
+			mock := dockertest.NewMockDockerAPI()
+			mock.ContainerListFunc = func(context.Context, client.ContainerListOptions) (client.ContainerListResult, error) {
+				mu.Lock()
+				lists++
+				mu.Unlock()
+				return client.ContainerListResult{Items: listed}, nil
+			}
+			mock.ContainerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+				project, ok := projectByName[name]
+				require.True(t, ok, "unexpected inspect of %q", name)
+				// The inspected container is a replacement: its full ID differs
+				// from the one in the drift listing.
+				return client.ContainerInspectResult{Container: container.InspectResponse{
+					ID:              name + "-inspected-full-id",
+					Name:            "/" + name,
+					RestartCount:    12,
+					State:           &container.State{Status: container.StateRunning},
+					Config:          &container.Config{Image: "nginx:latest", Labels: breakerTestLabels(project, "web", "")},
+					NetworkSettings: &container.NetworkSettings{},
+				}}, nil
+			}
+			mock.ContainerStopFunc = func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+				mu.Lock()
+				stopped = append(stopped, id)
+				mu.Unlock()
+				return client.ContainerStopResult{}, nil
+			}
+			d.dockerClientOverride = docker.NewClientWithAPI(mock)
+
+			d.runDriftCheck(context.Background())
+
+			var wantStopped []string
+			for _, target := range d.targets {
+				wantStopped = append(wantStopped, target.ProjectName+"-web-1-inspected-full-id")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, len(d.targets), lists, "drift and the restart breaker must share one listing per target")
+			assert.Equal(t, wantStopped, stopped, "the breaker must stop the inspected ID, not the listed one")
+		})
+	}
 }
 
 func TestDaemonRunDriftCheck_PanicClearsDriftAdmission(t *testing.T) {

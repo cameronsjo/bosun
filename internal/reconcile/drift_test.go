@@ -1338,3 +1338,85 @@ func TestExtractDeclaredState_OnlyUnparseableYAML_ReturnsErrNoDeclaredServices(t
 	assert.ErrorIs(t, err, ErrNoDeclaredServices)
 	assert.Empty(t, services)
 }
+
+// TestRunDriftCheckWithState pins the snapshot hand-off the daemon relies on
+// (#793): the caller's loaded state is compared without a second state-file
+// read, and the container snapshot used for the comparison is returned for
+// reuse by the restart breaker.
+func TestRunDriftCheckWithState(t *testing.T) {
+	ctx := context.Background()
+	webContainer := container.Summary{
+		ID:    "aaa0000000000000",
+		Names: []string{"/core-web-1"},
+		Image: "nginx:latest",
+		State: "running",
+		Labels: map[string]string{
+			ComposeProjectLabel: "core",
+			ComposeServiceLabel: "web",
+		},
+	}
+
+	tests := []struct {
+		name        string
+		state       *DeployState
+		wantErr     string
+		wantActual  []string
+		wantMissing []string
+		wantLists   int
+	}{
+		{
+			name:    "nil state returns error before Docker",
+			state:   nil,
+			wantErr: "no declared services",
+		},
+		{
+			name:    "empty state returns error before Docker",
+			state:   &DeployState{},
+			wantErr: "no declared services",
+		},
+		{
+			name: "returns report and the snapshot it compared",
+			state: &DeployState{DeclaredServices: []DeclaredService{
+				{Name: "web", Image: "nginx:latest"},
+				{Name: "api", Image: "myapp:v2"},
+			}},
+			wantActual:  []string{"web"},
+			wantMissing: []string{"api"},
+			wantLists:   1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockAPI := newReconcileMockDockerAPI()
+			lists := 0
+			mockAPI.containerListFunc = func(context.Context, client.ContainerListOptions) (client.ContainerListResult, error) {
+				lists++
+				return client.ContainerListResult{Items: []container.Summary{webContainer}}, nil
+			}
+
+			report, actual, err := RunDriftCheckWithState(ctx, docker.NewClientWithAPI(mockAPI), tt.state, "core", nil)
+
+			assert.Equal(t, tt.wantLists, lists)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, report)
+				assert.Nil(t, actual)
+				return
+			}
+			require.NoError(t, err)
+			var actualNames []string
+			for _, svc := range actual {
+				actualNames = append(actualNames, svc.Name)
+			}
+			assert.Equal(t, tt.wantActual, actualNames)
+			var missing []string
+			for _, item := range report.Items {
+				if item.Type == DriftMissing {
+					missing = append(missing, item.Service)
+				}
+			}
+			assert.Equal(t, tt.wantMissing, missing)
+		})
+	}
+}

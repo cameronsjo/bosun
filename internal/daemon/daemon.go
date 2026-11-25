@@ -1573,9 +1573,14 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		ignoreRules = targetCfg.DriftIgnore.Value
 	}
 
+	// Load the state file once per tick: the drift comparison and the
+	// load-mutate-save below share this snapshot (#793).
+	state := reconcile.LoadState(stateFile)
+	previouslyDrifted := len(state.DriftItems) > 0
+
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
 	checkCtx, otelDriftSpan := telemetry.Tracer("daemon").Start(checkCtx, "daemon.drift_check")
-	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName, ignoreRules)
+	report, actual, err := reconcile.RunDriftCheckWithState(checkCtx, client, state, projectName, ignoreRules)
 	finishSpan(err)
 	if err != nil {
 		telemetry.SpanError(otelDriftSpan, err)
@@ -1586,10 +1591,6 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	}
 	telemetry.SpanOK(otelDriftSpan)
 	otelDriftSpan.End()
-
-	// Load previous state to detect drift resolution.
-	state := reconcile.LoadState(stateFile)
-	previouslyDrifted := len(state.DriftItems) > 0
 
 	// Stage drift results — save happens after alert dedup updates the state.
 	state.DriftCheckedAt = report.CheckedAt
@@ -1766,7 +1767,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 
 	// Restart circuit breaker: detect containers in restart loops and stop them.
 	if targetCfg.RestartBreakerEnabled {
-		d.runRestartBreaker(checkCtx, client, state, projectName, restartBreakerTarget{
+		d.runRestartBreaker(checkCtx, client, state, actual, projectName, restartBreakerTarget{
 			config: targetCfg,
 			name:   targetContext(target),
 		})
@@ -1905,8 +1906,12 @@ type restartBreakerTarget struct {
 	name   string
 }
 
-// runRestartBreaker checks running containers for restart loops and stops offenders.
-func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string, options ...restartBreakerTarget) {
+// runRestartBreaker checks running containers for restart loops and stops
+// offenders. actual is the drift check's container snapshot from this tick;
+// RunRestartBreaker re-inspects every candidate by name, re-checks Compose
+// ownership, and stops by the inspected ID, so reusing the snapshot widens
+// nothing. A container created after the snapshot is evaluated next tick.
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, actual []reconcile.ActualService, projectName string, options ...restartBreakerTarget) {
 	logger := log.Component(log.ComponentDaemon)
 	logger.Debug().
 		Str("project", projectName).
@@ -1920,15 +1925,6 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 		if options[0].name != "" {
 			targetName = options[0].name
 		}
-	}
-
-	actual, err := reconcile.CollectActualState(ctx, client, projectName)
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Str("project", projectName).
-			Msg("Failed to collect container state for restart breaker")
-		return
 	}
 
 	// The breaker re-checks each candidate's Compose labels against this scope
