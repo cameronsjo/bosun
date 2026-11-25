@@ -7,11 +7,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
 	"gopkg.in/yaml.v3"
 )
+
+// MaxIncludeDepth is the deepest nesting of {{ include }} calls a render
+// allows. Real charts nest a handful of levels; the limit turns a template that
+// includes itself into an error instead of a stack overflow, which Go cannot
+// recover from.
+const MaxIncludeDepth = 64
 
 // TemplateEngine handles Go template rendering for Helm-aligned charts.
 type TemplateEngine struct {
@@ -24,6 +31,12 @@ type TemplateEngine struct {
 	// loadedTemplates caches parsed template files.
 	cacheMu         sync.Mutex
 	loadedTemplates map[string]*template.Template
+
+	// includeDepth counts {{ include }} calls currently executing.
+	// debt: one counter per engine sums concurrent renders on a shared engine, so
+	// MaxIncludeDepth is a bound on all of them together; give each render its own
+	// scope if one engine ever serves more than a few concurrent renders.
+	includeDepth atomic.Int32
 }
 
 // NewTemplateEngine creates a new template engine for the given templates directory.
@@ -66,8 +79,15 @@ func (e *TemplateEngine) funcMap() template.FuncMap {
 	return funcs
 }
 
-// includeFunc implements the {{ include "name" . }} function.
+// includeFunc implements the {{ include "name" . }} function. Nesting deeper
+// than MaxIncludeDepth returns ErrIncludeDepthExceeded.
 func (e *TemplateEngine) includeFunc(name string, data any) (string, error) {
+	if depth := e.includeDepth.Add(1); depth > MaxIncludeDepth {
+		e.includeDepth.Add(-1)
+		return "", fmt.Errorf("include %s: %w (limit %d)", name, ErrIncludeDepthExceeded, MaxIncludeDepth)
+	}
+	defer e.includeDepth.Add(-1)
+
 	// First check helpers
 	if e.helpers != nil {
 		if t := e.helpers.Lookup(name); t != nil {
@@ -130,7 +150,11 @@ func (e *TemplateEngine) loadTemplate(name string) (*template.Template, error) {
 	var err error
 
 	for _, ext := range []string{".yaml", ".yml"} {
-		templatePath = filepath.Join(e.templatesDir, name+ext)
+		// A name that resolves outside templatesDir (../x) is refused, not read
+		templatePath, err = validatePathWithinDir(e.templatesDir, name+ext)
+		if err != nil {
+			return nil, fmt.Errorf("template %s: %w", name, err)
+		}
 		content, err = os.ReadFile(templatePath)
 		if err == nil {
 			break
@@ -334,7 +358,11 @@ func (e *TemplateEngine) renderDependency(chart *Chart, dep *ChartDependency, ct
 	// Check if dependency template exists
 	tmplExists := false
 	for _, ext := range []string{".yaml", ".yml"} {
-		tmplPath := filepath.Join(e.templatesDir, dep.Name+ext)
+		// A dependency name that escapes templatesDir is an error, not "no template"
+		tmplPath, err := validatePathWithinDir(e.templatesDir, dep.Name+ext)
+		if err != nil {
+			return nil, fmt.Errorf("dependency %s: %w", dep.Name, err)
+		}
 		if _, err := os.Stat(tmplPath); err == nil {
 			tmplExists = true
 			break
