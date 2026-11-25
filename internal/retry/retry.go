@@ -5,6 +5,7 @@ package retry
 import (
 	"context"
 	"errors"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -180,6 +181,12 @@ func IsTransient(err error) bool {
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		if opErr.Timeout() {
+			return true
+		}
+		if opErr.Err == nil {
+			return false
+		}
+		if errors.Is(opErr.Err, io.EOF) || errors.Is(opErr.Err, io.ErrUnexpectedEOF) {
 			return true
 		}
 		// Check for specific transient syscall errors via string matching.

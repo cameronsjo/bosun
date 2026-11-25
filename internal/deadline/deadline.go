@@ -124,6 +124,7 @@ func newTimeout(parent context.Context, d time.Duration, clock Clock, pausable b
 		clock:       clock,
 		pausable:    pausable,
 		remaining:   d,
+		runningAt:   clock.Now(),
 	}
 	c.mu.Lock()
 	c.startLocked()

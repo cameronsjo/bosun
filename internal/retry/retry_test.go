@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -324,3 +325,16 @@ type timeoutError struct{}
 func (e *timeoutError) Error() string   { return "i/o timeout" }
 func (e *timeoutError) Timeout() bool   { return true }
 func (e *timeoutError) Temporary() bool { return true }
+
+func TestIsTransient_OpErrorEdgeCases(t *testing.T) {
+	t.Run("nil OpError.Err does not panic", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			assert.False(t, IsTransient(&net.OpError{Op: "dial", Err: nil}))
+		})
+	})
+
+	t.Run("OpError wrapping io.EOF is transient", func(t *testing.T) {
+		assert.True(t, IsTransient(&net.OpError{Op: "read", Err: io.EOF}))
+		assert.True(t, IsTransient(&net.OpError{Op: "read", Err: io.ErrUnexpectedEOF}))
+	})
+}
