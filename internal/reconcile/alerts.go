@@ -113,7 +113,7 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 	}
 
 	state.LastAlertedAttempt = state.AttemptCount
-	if err := SaveState(r.config.StateFile, state); err != nil {
+	if err := r.persistState(state); err != nil {
 		logger.Warn().Err(err).Msg("Failed to persist alert throttle state")
 	}
 }
@@ -212,6 +212,19 @@ func (r *Reconciler) dispatchRecovery(ctx context.Context, operation string, sen
 	}
 
 	if !r.config.OnRecovery {
+		return recoveryDisabled
+	}
+
+	// A dry run persists no state, so it can never record that the retraction was
+	// delivered or clear the debt it owes; sending would repeat the recovery on
+	// every dry run until a real run settles it, and it would claim a recovery no
+	// deploy produced. Failure, success, and interruption alerts are unaffected.
+	// recoveryDisabled makes the caller clear the debt in memory only.
+	if r.config.DryRun {
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+		logger.Info().
+			Str(log.FieldOperation, operation).
+			Msg("Recovery alert withheld. Reason: dry run persists no state, so the retraction cannot be recorded as delivered")
 		return recoveryDisabled
 	}
 

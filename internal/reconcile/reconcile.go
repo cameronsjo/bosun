@@ -672,7 +672,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 				if clearFailureState {
 					state.LastAlertedAttempt = 0
 				}
-				if err := SaveState(r.config.StateFile, state); err != nil {
+				if err := r.persistState(state); err != nil {
 					logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to reset breaker state after confirmed skip")
 				}
 			}
@@ -721,7 +721,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			if clearFailureState {
 				state.LastAlertedAttempt = 0
 			}
-			if err := SaveState(r.config.StateFile, state); err != nil {
+			if err := r.persistState(state); err != nil {
 				logger.Error().Err(err).Msg("Failed to save state after path-aware skip")
 			}
 			return nil
@@ -743,7 +743,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// Track this attempt before executing the pipeline.
 	state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
-	if err := SaveState(r.config.StateFile, state); err != nil {
+	if err := r.persistState(state); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state")
 	}
 
@@ -844,7 +844,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			telemetry.SpanError(otelHookSpan, hookErr)
 			otelHookSpan.End()
 			if r.config.DryRun {
-				r.undoDryRunAttempt(ctx, state, attemptSnapshot)
+				// Nothing to undo: a dry run persists no attempt count.
 				return fmt.Errorf("dry run: pre-deploy hooks would block the deploy: %w", hookErr)
 			}
 			r.sendThrottledFailureAlert(ctx, state, hookErr.Error(), hookErr)
@@ -922,7 +922,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Mark NeedsRedeploy before deploy starts so partial failures
 	// (configs synced but compose up failed) trigger a retry next cycle.
 	state.NeedsRedeploy = true
-	if err := SaveState(r.config.StateFile, state); err != nil {
+	if err := r.persistState(state); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save pre-deploy state")
 		return fmt.Errorf("failed to persist pre-deploy redeploy marker: %w", err)
 	}
@@ -1029,7 +1029,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// has completed. A verified non-dry-run removes it before success is recorded;
 	// dry-run secures its one-slot render before the same success boundary. Do not
 	// leave dry-run protection solely to the deferred finalizer: a protect-plus-
-	// delete failure must abort before state and alerts report success.
+	// delete failure must abort before the success alert reports success.
 	if r.config.DryRun {
 		if _, err := protectOrDeleteStaging(ctx, r.config.TargetName, r.config.StagingDir, r.stagingOps, "dry_run"); err != nil {
 			return fmt.Errorf("finalize dry-run staging evidence: %w", err)
@@ -1084,13 +1084,13 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Persist this deploy's manifest so the next reconcile prunes only files
 	// bosun itself wrote. Both modes now return a manifest (remote seeds it from
 	// the local staging walk, #334). A dry-run still populates ManagedFiles (the
-	// source walk runs regardless of whether files were written), so guard
-	// against seeding the manifest from a dry-run — otherwise the next real
-	// reconcile could prune untouched paths.
+	// source walk runs regardless of whether files were written), so keep that
+	// manifest out of the in-memory state too. persistState already drops the
+	// write on a dry run; the guard keeps the two defenses independent.
 	if deployResult != nil && !r.config.DryRun {
 		state.DeployedFiles = deployResult.ManagedFiles
 	}
-	if err := SaveState(r.config.StateFile, state); err != nil {
+	if err := r.persistState(state); err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldPath, r.config.StateFile).
@@ -1110,6 +1110,22 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.sendSuccessAlert(ctx)
 
 	return nil
+}
+
+// persistState writes the deploy state file, except on a dry run. A dry run must
+// leave the configured state file exactly as it found it (#792): the daemon runs
+// Reconciler.Run against its production state path, and a dry run that recorded
+// an attempt, a redeploy marker, or a deployed commit would make the next real
+// run skip or throttle a deploy that never happened. Decisions inside the run
+// still see its in-memory state; only the write is dropped.
+//
+// Every state write in a Reconciler method goes through here. A direct
+// SaveState(r.config.StateFile, ...) in one re-opens the bug.
+func (r *Reconciler) persistState(state *DeployState) error {
+	if r.config.DryRun {
+		return nil
+	}
+	return SaveState(r.config.StateFile, state)
 }
 
 // recordSyncFailureAttempt tracks a consecutive-failure attempt for a
@@ -1143,7 +1159,7 @@ func (r *Reconciler) recordSyncFailureAttempt(ctx context.Context, state *Deploy
 	}
 
 	state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, commit, state.AttemptCount)
-	if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+	if saveErr := r.persistState(state); saveErr != nil {
 		logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state")
 	}
 	return nil
@@ -1214,7 +1230,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 				state.DriftCheckedAt = report.CheckedAt
 				state.DriftItems = report.Items
 			}
-			if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+			if saveErr := r.persistState(state); saveErr != nil {
 				logger.Warn().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save state after health verification")
 			}
 			return nil
@@ -1247,7 +1263,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 			state.DriftItems = report.Items
 		}
 
-		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+		if saveErr := r.persistState(state); saveErr != nil {
 			logger.Warn().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save state after health verification failure")
 		}
 
@@ -1273,7 +1289,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		logger.Warn().Err(collectErr).Msg("Failed to collect actual state for post-verification drift check")
 	}
 
-	if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+	if saveErr := r.persistState(state); saveErr != nil {
 		logger.Warn().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save state after health verification")
 	}
 
@@ -1899,7 +1915,7 @@ func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeploySta
 	}
 
 	state.LastAlertedAttempt = state.AttemptCount
-	if err := SaveState(r.config.StateFile, state); err != nil {
+	if err := r.persistState(state); err != nil {
 		logger.Warn().Err(err).Msg("Failed to persist alert throttle state")
 	}
 }

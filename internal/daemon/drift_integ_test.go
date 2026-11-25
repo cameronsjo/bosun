@@ -64,7 +64,7 @@ func TestDaemonRunDriftCheck_UpdatesStateFile(t *testing.T) {
 	cfg.APITimeout = 5 * time.Second
 	cfg.ReconcileConfig = reconcile.DefaultConfig()
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
-	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.DryRun = false // the drift tick is observe-only under dry run (#792); this test exercises it
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
 	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = stateFile

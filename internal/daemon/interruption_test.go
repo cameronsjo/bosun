@@ -203,7 +203,11 @@ func newInterruptionCycleDaemon(t *testing.T) (*Daemon, string) {
 	base.LocalAppdataPath = filepath.Join(stateDir, "appdata")
 	base.InfraSubDir = "."
 	base.DeployMode = "local"
-	base.DryRun = true
+	// A persisting run with an inert deploy step: these tests assert per-target
+	// attempt and interruption state, which a dry run never writes.
+	base.DryRun = false
+	base.SkipDeployInvariant = true
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithDeployOps(&reconcile.DeployOps{DryRun: true}))
 	base.OnFailure = true
 	base.Targets = []reconcile.Target{
 		{Name: "alpha", ProjectName: "alpha", LocalAppdataPath: filepath.Join(base.LocalAppdataPath, "alpha")},

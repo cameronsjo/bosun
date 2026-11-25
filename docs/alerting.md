@@ -187,7 +187,9 @@ alerts:
 
 ## Testing Alerts
 
-Use `bosun reconcile --dry-run` to test the reconciliation workflow without making changes. Alerts will still be sent for dry-run results if configured.
+Use `bosun reconcile --dry-run` to test the reconciliation workflow without making changes. Alerts will still be sent for dry-run results if configured: failure, success, and interruption alerts. A dry run sends no recovery alert, because it writes no deploy state and cannot record that a retraction was delivered; a dry run that follows an alerted failure leaves the retraction owed for the next real run.
+
+A dry run never advances the deploy state, so a polling dry-run daemon runs the whole pipeline on every poll and alerts on each one while an alert gate is enabled. The daemon has no `--no-alerts` flag; remove the alert provider settings to silence it. A dry-run daemon sends no drift, resolution, or restart-breaker alerts: its periodic drift check observes only.
 
 To test individual providers:
 
