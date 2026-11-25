@@ -40,6 +40,17 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.49.0](https://github.com/cameronsjo/bosun/compare/v0.48.0...v0.49.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **webhook:** a deployment whose webhook secret is the literal change-me now gets 403 on every webhook trigger unless BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. A deployment that sets WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET to different values now gets 403 on every webhook trigger; set one of them, or both to the same value. On the receiver, a generic /webhook request whose X-Signature is invalid is now rejected even when X-Hub-Signature-256 is valid. Upgrade the daemon and the bosun webhook receiver together: a receiver built before this change does not read the daemon's secret-conflict flag.
+
+### Bug Fixes
+
+* **webhook:** resolve the webhook secret and generic signature header one way on daemon and receiver ([#833](https://github.com/cameronsjo/bosun/issues/833)) ([cf2e510](https://github.com/cameronsjo/bosun/commit/cf2e5109be970fa06a1cc40cdef75aedfbab81fe))
+
 ## [0.48.0](https://github.com/cameronsjo/bosun/compare/v0.47.14...v0.48.0) (2026-11-25)
 
 
