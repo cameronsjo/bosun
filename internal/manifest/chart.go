@@ -38,9 +38,23 @@ func NewChartLoader(chartsDir string) (*ChartLoader, error) {
 	}, nil
 }
 
+// chartDir resolves a chart name to its directory inside chartsDir. A name that
+// resolves outside chartsDir (../x) returns ErrPathTraversal and nothing is
+// read. The check is lexical and does not follow symlinks.
+func (l *ChartLoader) chartDir(name string) (string, error) {
+	dir, err := validatePathWithinDir(l.chartsDir, name)
+	if err != nil {
+		return "", fmt.Errorf("chart %s: %w", name, err)
+	}
+	return dir, nil
+}
+
 // LoadChart loads a chart from its directory.
 func (l *ChartLoader) LoadChart(name string) (*Chart, error) {
-	chartDir := filepath.Join(l.chartsDir, name)
+	chartDir, err := l.chartDir(name)
+	if err != nil {
+		return nil, err
+	}
 
 	// Load Chart.yaml
 	chartPath := filepath.Join(chartDir, "Chart.yaml")
@@ -71,7 +85,10 @@ func (l *ChartLoader) LoadChart(name string) (*Chart, error) {
 
 // LoadChartValues loads the values.yaml for a chart.
 func (l *ChartLoader) LoadChartValues(name string) (map[string]any, error) {
-	chartDir := filepath.Join(l.chartsDir, name)
+	chartDir, err := l.chartDir(name)
+	if err != nil {
+		return nil, err
+	}
 	valuesPath := filepath.Join(chartDir, "values.yaml")
 
 	content, err := os.ReadFile(valuesPath)
@@ -213,10 +230,14 @@ func (l *ChartLoader) RenderStack(stackPath string, stackValuesOverride map[stri
 	return output, nil
 }
 
-// ChartExists checks if a chart directory exists.
+// ChartExists checks if a chart directory exists. A name that resolves outside
+// the charts directory does not exist.
 func (l *ChartLoader) ChartExists(name string) bool {
-	chartPath := filepath.Join(l.chartsDir, name, "Chart.yaml")
-	_, err := os.Stat(chartPath)
+	chartDir, err := l.chartDir(name)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(chartDir, "Chart.yaml"))
 	return err == nil
 }
 

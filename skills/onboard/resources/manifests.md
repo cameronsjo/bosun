@@ -260,6 +260,10 @@ A bare list entry such as `FOO` (no `=`) is kept as a key with no value, which t
 
 This applies only to compose services. An `environment` or `labels` key anywhere else, such as in a service's `config:` block or in chart values, merges like any other key, so a list there is replaced by the later list.
 
+## Chart Templates (Helm-aligned)
+
+Charts under `charts/` render Go templates from `charts/templates/` with Sprig plus `include "name" .`, `nindent` and `toYaml`. `include` nests at most 64 levels: a template that includes itself, directly or through other templates, fails with `template include depth exceeded maximum` instead of crashing. Chart names, template names (the chart's `templates:` list, `dependencies:` names, and names passed to `include`) must resolve inside `charts/` and `charts/templates/`: `../other` is rejected with `path traversal detected`. The check is on the path text and does not follow symlinks.
+
 ## Sidecars (needs/services)
 
 Sidecars are companion containers (databases, caches) that run alongside your service.
