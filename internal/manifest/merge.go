@@ -27,36 +27,56 @@ var ExtendKeys = map[string]bool{
 // DeepMerge recursively merges overlay into base and returns a new map.
 // Merge semantics:
 //   - UnionKeys (networks, depends_on): set union for lists
-//   - ExtendKeys (endpoints): append lists
+//   - ExtendKeys (endpoints): append lists; elements are kept as-is, so
+//     endpoint maps survive intact
 //   - Default: replace lists, recursive merge for dicts
-//   - environment/labels are normalized from list to map before merging
+//   - environment/labels of a compose service (services.<name>.environment,
+//     services.<name>.labels) are normalized from list to map before merging,
+//     so list and map forms merge with each other. Anywhere else (user config,
+//     chart values) the values are merged like any other key.
 //
-// Panics if recursion depth exceeds MaxMergeDepth to prevent OOM.
+// The result never aliases base or overlay: base is deep-copied once up front
+// and merged into in place, and overlay values are deep-copied as they are
+// taken.
+//
+// Panics if recursion depth exceeds MaxMergeDepth to prevent OOM. That includes
+// a base nested deeper than MaxMergeDepth, which the up-front copy visits even
+// where the overlay does not touch it.
 func DeepMerge(base, overlay map[string]any) map[string]any {
-	return deepMergeInternal(base, overlay, "", 0)
+	result, _ := deepCopyWithDepth(base, 0).(map[string]any)
+	return deepMergeInternal(result, overlay, nil, 0)
 }
 
-func deepMergeInternal(base, overlay map[string]any, path string, depth int) map[string]any {
+// deepMergeInternal merges overlay into result in place and returns result.
+// The caller owns result (it is a private copy); trail is the key path from
+// the DeepMerge root to result.
+func deepMergeInternal(result, overlay map[string]any, trail []string, depth int) map[string]any {
 	if depth > MaxMergeDepth {
-		panic(fmt.Sprintf("DeepMerge: %v at path %q", ErrMergeDepthExceeded, path))
+		panic(fmt.Sprintf("DeepMerge: %v at path %q", ErrMergeDepthExceeded, strings.Join(trail, ".")))
 	}
 
-	result := copyMap(base)
-
-	// Handle nil overlay - just return a copy of base
+	// Handle nil overlay - nothing to merge
 	if overlay == nil {
 		return result
 	}
 
 	for key, overlayValue := range overlay {
-		currentPath := key
-		if path != "" {
-			currentPath = path + "." + key
-		}
-
 		baseValue, exists := result[key]
 		if !exists {
 			result[key] = deepCopyWithDepth(overlayValue, depth+1)
+			continue
+		}
+
+		childTrail := make([]string, len(trail)+1)
+		copy(childTrail, trail)
+		childTrail[len(trail)] = key
+
+		// Compose service environment/labels: accept list or dict on either side
+		if isServiceDictKey(trail, key) && isDictOrList(baseValue) && isDictOrList(overlayValue) {
+			result[key] = deepMergeInternal(
+				normalizeToDict(baseValue, key),
+				normalizeToDict(overlayValue, key),
+				childTrail, depth+1)
 			continue
 		}
 
@@ -64,30 +84,34 @@ func deepMergeInternal(base, overlay map[string]any, path string, depth int) map
 		baseMap, baseIsMap := baseValue.(map[string]any)
 		overlayMap, overlayIsMap := overlayValue.(map[string]any)
 		if baseIsMap && overlayIsMap {
-			// Normalize environment/labels before dict merge
+			// Outside compose services environment/labels keep their historical
+			// stringifying normalization
 			if key == "environment" || key == "labels" {
-				baseMap = normalizeToDict(baseMap, key)
-				overlayMap = normalizeToDict(overlayMap, key)
+				baseMap = stringifyDict(baseMap)
+				overlayMap = stringifyDict(overlayMap)
 			}
-			result[key] = deepMergeInternal(baseMap, overlayMap, currentPath, depth+1)
+			result[key] = deepMergeInternal(baseMap, overlayMap, childTrail, depth+1)
 			continue
 		}
 
 		// Both are lists - apply merge strategy
-		baseList, baseIsList := toStringSlice(baseValue)
-		overlayList, overlayIsList := toStringSlice(overlayValue)
-		if baseIsList && overlayIsList {
-			if UnionKeys[key] {
+		switch {
+		case UnionKeys[key]:
+			baseList, baseOK := toStringSlice(baseValue)
+			overlayList, overlayOK := toStringSlice(overlayValue)
+			if baseOK && overlayOK {
 				// Set union - no duplicates
 				result[key] = stringSliceUnion(baseList, overlayList)
-			} else if ExtendKeys[key] {
-				// Extend - append
-				result[key] = append(baseList, overlayList...)
-			} else {
-				// Replace
-				result[key] = deepCopyWithDepth(overlayValue, depth+1)
+				continue
 			}
-			continue
+		case ExtendKeys[key]:
+			baseList, baseOK := toAnySlice(baseValue, depth+1)
+			overlayList, overlayOK := toAnySlice(overlayValue, depth+1)
+			if baseOK && overlayOK {
+				// Extend - append, keeping elements untouched
+				result[key] = append(baseList, overlayList...)
+				continue
+			}
 		}
 
 		// Default: replace
@@ -97,9 +121,30 @@ func deepMergeInternal(base, overlay map[string]any, path string, depth int) map
 	return result
 }
 
+// isServiceDictKey reports whether key is an environment or labels entry of a
+// compose service, that is, trail is exactly ["services", <name>].
+func isServiceDictKey(trail []string, key string) bool {
+	if key != "environment" && key != "labels" {
+		return false
+	}
+	return len(trail) == 2 && trail[0] == "services"
+}
+
+// isDictOrList reports whether value is a shape normalizeToDict understands.
+func isDictOrList(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any, []string:
+		return true
+	default:
+		return false
+	}
+}
+
 // normalizeToDict converts list-style environment/labels to dict format.
 // Input: ["FOO=bar", "BAZ=qux"] -> {"FOO": "bar", "BAZ": "qux"}
-// Input: {"FOO": "bar"} -> {"FOO": "bar"} (unchanged)
+// Input: ["FOO"] -> {"FOO": nil} (compose passthrough: value comes from the shell)
+// Input: {"FOO": "bar"} -> {"FOO": "bar"} (values stringified; nil stays nil)
+// The result is always a new map.
 func normalizeToDict(value any, keyName string) map[string]any {
 	if value == nil {
 		return make(map[string]any)
@@ -109,7 +154,11 @@ func normalizeToDict(value any, keyName string) map[string]any {
 	if m, ok := value.(map[string]any); ok {
 		result := make(map[string]any, len(m))
 		for k, v := range m {
-			result[fmt.Sprintf("%v", k)] = fmt.Sprintf("%v", v)
+			if v == nil {
+				result[k] = nil
+				continue
+			}
+			result[k] = fmt.Sprintf("%v", v)
 		}
 		return result
 	}
@@ -119,19 +168,41 @@ func normalizeToDict(value any, keyName string) map[string]any {
 	switch v := value.(type) {
 	case []any:
 		for _, item := range v {
-			s := fmt.Sprintf("%v", item)
-			if idx := strings.Index(s, "="); idx > 0 {
-				result[s[:idx]] = s[idx+1:]
+			if item == nil {
+				continue
 			}
+			addListEntry(result, fmt.Sprintf("%v", item))
 		}
 	case []string:
 		for _, item := range v {
-			if idx := strings.Index(item, "="); idx > 0 {
-				result[item[:idx]] = item[idx+1:]
-			}
+			addListEntry(result, item)
 		}
 	}
 
+	return result
+}
+
+// addListEntry parses one "KEY=value" or bare "KEY" list entry into result.
+// An entry with an empty key ("=value") or no text is skipped.
+func addListEntry(result map[string]any, entry string) {
+	idx := strings.Index(entry, "=")
+	switch {
+	case idx > 0:
+		result[entry[:idx]] = entry[idx+1:]
+	case idx < 0 && entry != "":
+		result[entry] = nil
+	}
+}
+
+// stringifyDict converts every value of a dict to its string form, nil
+// included ("<nil>"). It is the pre-existing normalization for environment and
+// labels maps outside compose services, kept unchanged so user config and
+// chart values merge as before.
+func stringifyDict(m map[string]any) map[string]any {
+	result := make(map[string]any, len(m))
+	for k, v := range m {
+		result[fmt.Sprintf("%v", k)] = fmt.Sprintf("%v", v)
+	}
 	return result
 }
 
@@ -145,6 +216,25 @@ func toStringSlice(value any) ([]string, bool) {
 		result := make([]string, len(v))
 		for i, item := range v {
 			result[i] = fmt.Sprintf("%v", item)
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+// toAnySlice converts a []any or []string to a fresh []any whose elements are
+// deep copies, so the result can be appended to without touching the input.
+// Elements keep their type: endpoint maps stay maps.
+func toAnySlice(value any, depth int) ([]any, bool) {
+	switch v := value.(type) {
+	case []any:
+		copied, _ := deepCopyWithDepth(v, depth).([]any)
+		return copied, true
+	case []string:
+		result := make([]any, len(v))
+		for i, item := range v {
+			result[i] = item
 		}
 		return result, true
 	default:
@@ -170,18 +260,6 @@ func stringSliceUnion(a, b []string) []any {
 		}
 	}
 
-	return result
-}
-
-// copyMap creates a shallow copy of a map.
-func copyMap(m map[string]any) map[string]any {
-	if m == nil {
-		return make(map[string]any)
-	}
-	result := make(map[string]any, len(m))
-	for k, v := range m {
-		result[k] = v
-	}
 	return result
 }
 

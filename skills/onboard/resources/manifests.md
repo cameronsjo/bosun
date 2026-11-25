@@ -239,7 +239,7 @@ Duplicate entries are removed:
 
 ### Extend Merge (endpoints)
 
-Lists are concatenated:
+Lists are concatenated, and each element is kept exactly as written (endpoint maps stay maps):
 
 ```yaml
 # Provision A: endpoints: [{name: health}]
@@ -249,12 +249,16 @@ Lists are concatenated:
 
 ### Environment/Labels Normalization
 
-`environment` and `labels` are normalized from list to map format before merging, so provisions can safely merge environment variables:
+A compose service's `environment` and `labels` (`services.<name>.environment`, `services.<name>.labels`) accept list or map format, in any combination, and are normalized to map format before merging, so provisions can safely merge environment variables:
 
 ```yaml
 # Input (list format):     environment: ["FOO=bar", "BAZ=qux"]
 # Normalized (map format): environment: {FOO: bar, BAZ: qux}
 ```
+
+A bare list entry such as `FOO` (no `=`) is kept as a key with no value, which tells Compose to pass `FOO` through from the host environment. On a key that appears in both, the later value wins.
+
+This applies only to compose services. An `environment` or `labels` key anywhere else, such as in a service's `config:` block or in chart values, merges like any other key, so a list there is replaced by the later list.
 
 ## Sidecars (needs/services)
 
