@@ -635,6 +635,8 @@ Drift is the difference between what you declared (in your deploy state) and wha
 
 A periodic drift check skips while a reconciliation runs or a reconcile trigger is waiting. A trigger that arrives during a drift check waits for that check to finish, then starts. Status endpoints are never blocked by a running drift check.
 
+Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only: it detects, logs, and updates metrics, and keeps its last result in memory: `GET /api/drift` (default target) and the per-target `drift` status serve that observation (`unknown` with no items before the first tick), while the state file's drift fields stay frozen at the last real run (so `bosun drift` shows the frozen record). It saves no state, runs no restart breaker (no container is stopped), triggers no self-heal, and sends no drift, resolution, or breaker alert.
+
 ### Drift Types
 
 | Type | Severity | Meaning |
@@ -727,7 +729,7 @@ bosun drift --target=nas       # Show drift for a specific target
 
 ## Deploy State and Circuit Breaker
 
-The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A dry run, in the daemon or the one-shot command, never writes the state file: `Reconciler.Run` reads it for skip and circuit-breaker decisions and drops every write, so it is byte-identical afterwards (or still absent). The one-shot command also uses a temporary copy as a second barrier. With no state advancing, a dry-run daemon re-runs the whole pipeline, pre-deploy hooks included, on every poll. A dry run sends failure, success, and interruption alerts but no recovery alert, since it cannot record that a retraction was delivered. This covers `Reconciler.Run` only, not the daemon's periodic drift check.
+The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A dry run, in the daemon or the one-shot command, never writes the state file: `Reconciler.Run` reads it for skip and circuit-breaker decisions and drops every write, so it is byte-identical afterwards (or still absent). The one-shot command also uses a temporary copy as a second barrier. With no state advancing, a dry-run daemon re-runs the whole pipeline, pre-deploy hooks included, on every poll. A dry run sends failure, success, and interruption alerts but no recovery alert, since it cannot record that a retraction was delivered. The daemon's periodic drift check is observe-only under dry run too (see Drift Detection).
 
 Container deployments MUST mount `/var/lib/bosun` on persistent writable
 storage. The shipped Compose and Unraid definitions use

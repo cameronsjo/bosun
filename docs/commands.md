@@ -579,7 +579,7 @@ bosun daemon -i 1800
 
 | Flag | Description |
 |------|-------------|
-| `-n`, `--dry-run` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check is not covered by this flag |
+| `-n`, `--dry-run` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check only observes: it saves no state, stops no container, triggers no self-heal, and sends no alert |
 | `-p`, `--port` | HTTP server port (default: 8080) |
 | `-i`, `--poll-interval` | Poll interval in seconds (default: 3600, 0 disables) |
 

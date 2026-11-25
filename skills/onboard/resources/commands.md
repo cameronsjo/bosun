@@ -268,7 +268,7 @@ bosun daemon --poll-interval 0        # Disable polling (webhook-only)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n`, `--dry-run` | `false` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check is not covered by this flag |
+| `-n`, `--dry-run` | `false` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check only observes: it saves no state, stops no container, triggers no self-heal, and sends no alert |
 | `-p`, `--port` | `8080` | HTTP server port |
 | `-i`, `--poll-interval` | `3600` | Poll interval in seconds (0 = disabled) |
 
