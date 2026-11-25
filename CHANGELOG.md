@@ -40,6 +40,13 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.47.9](https://github.com/cameronsjo/bosun/compare/v0.47.8...v0.47.9) (2026-11-25)
+
+
+### Bug Fixes
+
+* **manifest:** DeepMerge preserves endpoint maps, merges list env/labels, never aliases base ([#820](https://github.com/cameronsjo/bosun/issues/820)) ([d7b53f5](https://github.com/cameronsjo/bosun/commit/d7b53f542d7130bf65a0276419c994af9b8bf6b4))
+
 ## [0.47.8](https://github.com/cameronsjo/bosun/compare/v0.47.7...v0.47.8) (2026-10-24)
 
 
