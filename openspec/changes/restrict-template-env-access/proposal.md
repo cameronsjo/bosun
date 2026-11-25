@@ -17,7 +17,7 @@ from the decrypted secrets map, not the process environment.
   and `getHostByName`. A template calling one fails to parse and is not
   rendered.
 - `bosun render` has no requirement of its own in the reconcile spec. The
-  delta below covers reconcile Template Rendering; `bosun render` uses the
+  delta below covers reconcile templates; `bosun render` uses the
   same allowlisted function map, and that is enforced by code and tests only.
 - Templates that read secrets with `fromJson (env "SOPS_SECRETS")` (a
   pattern earlier docs taught, which current bosun no longer populates)
@@ -26,7 +26,9 @@ from the decrypted secrets map, not the process environment.
 
 ## Impact
 
-- Affected specs: reconcile (Template Rendering)
+- Affected specs: reconcile (new requirement Template Function Allowlist;
+  Template Rendering is unchanged, and its Sprig sentence now reads through
+  the allowlist)
 - Affected code: `internal/reconcile/template.go`, `internal/cmd/render.go`
 - Not closed here: compose `${VAR}` interpolation and repo-reloaded hooks
   also reach the daemon environment; tracked separately.
