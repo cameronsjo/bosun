@@ -36,12 +36,23 @@ each time the observed container ID changes (`evaluateRestartBreaker`,
 - New requirement Restart Breaker Replica Tracking. The breaker evaluates
   every running or restarting container of a service, each with its own
   baseline keyed by container ID, and stops each one that reaches the
-  threshold. A tripped entry stays tied to the container that tripped and
-  resolves only when that container, or the container that replaces it, runs
-  stably. A breaker-stopped replica therefore stays tripped, with no resolved
-  alert, while a sibling runs. Selection does not affect the breaker. A service
-  with one container behaves as before.
-- Both requirements supersede wording in existing requirements instead of
+  threshold, within the project scope it already enforces. Selection does not
+  affect the breaker. A service with one container behaves as before.
+- New requirement Restart Breaker Tripped Entry Lifecycle. A tripped entry
+  stays tied to the container that tripped, so a breaker-stopped replica stays
+  tripped, with no resolved alert, while a sibling runs. It resolves only when
+  that container, or the container that replaces it, runs stably. "Replaces"
+  is defined: a new container takes the entry over only when the tripped
+  container no longer exists and the new one has the same Compose service and
+  container number (`com.docker.compose.container-number`); a sibling with
+  another number never inherits it. A tripped container that is gone with no
+  replacement clears its entry without a resolved alert, logged at info level,
+  and the next deploy starts fresh; this replaces the earlier behavior of
+  keeping the entry until a container returned. A service is reported resolved
+  only when none of its containers is still tripped, so one replica recovering
+  does not hide another that is still tripped. The skip check counts a service
+  as present when one of its stopped containers is tripped.
+- The requirements supersede wording in existing requirements instead of
   modifying them. Service State Selection supersedes the per-container
   wording in Declared vs Actual State Comparison and State-Based Skip Logic;
   neither is restated, because Declared vs Actual State Comparison is over 500
@@ -70,9 +81,10 @@ each time the observed container ID changes (`evaluateRestartBreaker`,
 
 ## Impact
 
-- Affected specs: reconcile (new requirements Service State Selection and
-  Restart Breaker Replica Tracking; the existing requirements named above are
-  unchanged and now read through them)
+- Affected specs: reconcile (new requirements Service State Selection,
+  Restart Breaker Replica Tracking and Restart Breaker Tripped Entry
+  Lifecycle; the existing requirements named above are unchanged and now read
+  through them)
 - Affected code: `internal/reconcile/drift.go` (`CollectActualState`, a
   `preferContainer` helper over `docker.ContainerInfo`, and the containers of
   each service on `ActualService`); `internal/reconcile/restart_breaker.go`

@@ -55,7 +55,7 @@ Wherever Bosun reads a service's container from actual state (drift, skip check,
 
 ### Requirement: Restart Breaker Replica Tracking
 
-The restart circuit breaker SHALL evaluate every running or restarting container of a service, each with its own restart baseline keyed by container ID, and SHALL stop each one that reaches the threshold. A tripped entry SHALL stay tied to the container that tripped and resolve only when that container, or the container that replaces it, runs stably. Service State Selection SHALL NOT affect breaker tracking.
+The restart circuit breaker SHALL evaluate every running or restarting container of a service it owns, each with its own restart baseline keyed by container ID, and SHALL stop each one that reaches the threshold. Service State Selection SHALL NOT affect breaker tracking.
 
 #### Scenario: Every replica crash-loops
 
@@ -75,19 +75,53 @@ The restart circuit breaker SHALL evaluate every running or restarting container
 - **AND** no resolved alert is sent for it
 - **AND** the sibling is tracked with its own baseline
 
-#### Scenario: Restarted replica resolves after a stable run
-
-- **WHEN** a tripped replica is running again
-- **AND** its restart count is unchanged across two consecutive checks
-- **THEN** its entry resolves and a resolved alert is sent
-
-#### Scenario: Replacement container resolves after a grace sample
-
-- **WHEN** a deploy replaces a tripped container with a new container of the same service
-- **THEN** the entry stays tripped for the first sample on the new container
-- **AND** it resolves on the next sample whose restart count is unchanged
-
 #### Scenario: Single-container service is unchanged
 
 - **WHEN** a service has one container
 - **THEN** the breaker keeps one baseline for it and trips it at the threshold
+
+### Requirement: Restart Breaker Tripped Entry Lifecycle
+
+A tripped entry SHALL stay tied to the container that tripped. A new container takes it over only when the tripped container no longer exists and the new one has the same Compose service and container number; a sibling with another number never inherits it. A gone container with no replacement SHALL clear its entry without a resolved alert. A service is resolved only when none of its containers is still tripped.
+
+#### Scenario: Restarted replica resolves after a stable run
+
+- **WHEN** a tripped replica is running again
+- **AND** its restart count is unchanged across two consecutive checks
+- **THEN** its entry resolves
+- **AND** a resolved alert is sent when no other container of the service is still tripped
+
+#### Scenario: Replacement container resolves after a grace sample
+
+- **WHEN** a deploy replaces a tripped container with a new container of the same service and container number
+- **THEN** the entry stays tripped for the first sample on the new container
+- **AND** it resolves on the next sample whose restart count is unchanged
+
+#### Scenario: Gone container with no replacement clears quietly
+
+- **WHEN** a tripped container no longer exists and no container with its container number replaces it
+- **THEN** its entry is cleared without a resolved alert
+- **AND** the clearing is logged at info level
+- **AND** the next deploy starts the service from a fresh baseline
+
+#### Scenario: Sibling with another number does not inherit
+
+- **WHEN** a tripped container no longer exists and a new container of the service has a different container number
+- **THEN** the new container is tracked with its own entry
+- **AND** the tripped entry is cleared, not taken over
+
+#### Scenario: Service resolves when the last tripped container recovers
+
+- **WHEN** two containers of a service are tripped and one recovers
+- **THEN** no resolved alert is sent
+- **AND** a resolved alert is sent when the other recovers
+
+#### Scenario: Restarted replica that keeps looping is not stopped again
+
+- **WHEN** a tripped replica is started again and its restart count keeps rising
+- **THEN** its entry stays tripped and no second stop is attempted
+
+#### Scenario: Skip check counts a tripped container as present
+
+- **WHEN** every container of a service is stopped and one of them has a tripped entry
+- **THEN** the commit-already-deployed skip check counts the service as present
