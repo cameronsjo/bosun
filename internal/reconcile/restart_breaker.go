@@ -312,7 +312,9 @@ func (s RestartBreakerScope) ownsContainer(labels map[string]string, service str
 type breakerContainer struct {
 	Service       string
 	ContainerName string
-	Obs           restartObservation
+	// Number is the container's Compose container number, "" when unlabeled.
+	Number string
+	Obs    restartObservation
 }
 
 // unobservedContainer marks a container whose inspect failed or whose labels
@@ -381,6 +383,7 @@ func collectRestartCounts(
 			observed = append(observed, breakerContainer{
 				Service:       svc.Name,
 				ContainerName: replica.Name,
+				Number:        details.Labels[ComposeContainerNumberLabel],
 				Obs: restartObservation{
 					ContainerID:  details.ID,
 					RestartCount: details.RestartCount,
@@ -399,6 +402,22 @@ func collectRestartCounts(
 // cannot contain "#".
 func belongsToService(key, service string) bool {
 	return key == service || strings.HasPrefix(key, service+"#")
+}
+
+// serviceOfKey returns the service a tracking key belongs to.
+func serviceOfKey(key string) string {
+	service, _, _ := strings.Cut(key, "#")
+	return service
+}
+
+// sortedTrackingKeys returns every key of the tracking map in sorted order.
+func sortedTrackingKeys(tracked map[string]RestartTrackingEntry) []string {
+	keys := make([]string, 0, len(tracked))
+	for key := range tracked {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // trackedKeysFor returns the tracking keys of a service in sorted order.
@@ -476,11 +495,11 @@ func assignTrackKeys(
 			}
 		}
 
-		for i := range group {
+		for i, c := range group {
 			if assigned[i] != "" {
 				continue
 			}
-			if key := successorKey(service, entries, claimed, tracked, existing[service]); key != "" {
+			if key := successorKey(service, c.Number, entries, claimed, tracked, existing[service]); key != "" {
 				assigned[i], claimed[key] = key, true
 			}
 		}
@@ -507,16 +526,24 @@ func assignTrackKeys(
 	return keyed
 }
 
-// successorKey picks the unclaimed entry of a service whose container has been
-// replaced, preferring a tripped one, or "" when there is none.
+// successorKey picks the unclaimed entry of a service that a new container with
+// the given Compose container number replaces, preferring a tripped one, or ""
+// when there is none. A container replaces an entry only when the entry's
+// container no longer exists and the container numbers agree; a new sibling
+// with another number never inherits an entry. A number that is unknown on
+// either side (state from before it was recorded, or an unlabeled container)
+// does not block the match.
 func successorKey(
-	service string,
+	service, number string,
 	entries []string,
 	claimed map[string]bool,
 	tracked map[string]RestartTrackingEntry,
 	ids map[string]bool,
 ) string {
 	replaced := func(key string) bool {
+		if n := tracked[key].ContainerNumber; n != "" && number != "" && n != number {
+			return false
+		}
 		if ids == nil {
 			return key == service
 		}
@@ -633,9 +660,62 @@ func RunRestartBreaker(
 		}
 	}
 
+	// Record each observed container's Compose number so a replacement can be
+	// matched to the entry it takes over.
+	for key, c := range keyed {
+		if entry, ok := result.Updated[key]; ok {
+			entry.ContainerNumber = c.Number
+			result.Updated[key] = entry
+		}
+	}
+
+	// A tripped container that no longer exists, and that no new container with
+	// its Compose number took over, has nothing left to recover: clear its entry
+	// without a resolved alert, so the next deploy starts from a fresh baseline.
+	// An unknown container list (a hand-built ActualService) never counts as gone.
+	listed := containerIDsByService(actual)
+	present := make(map[string]bool, len(actual))
+	for _, svc := range actual {
+		present[svc.Name] = true
+	}
+	for _, key := range sortedTrackingKeys(state.RestartTracking) {
+		prev := state.RestartTracking[key]
+		if !prev.Tripped || prev.ContainerID == "" {
+			continue
+		}
+		if _, observed := keyed[key]; observed {
+			continue
+		}
+		service := serviceOfKey(key)
+		ids, known := listed[service]
+		if (known && ids[prev.ContainerID]) || (!known && present[service]) {
+			continue
+		}
+		delete(result.Updated, key)
+		logger.Info().
+			Str("service", service).
+			Str("container_id", prev.ContainerID).
+			Str("tracking_key", key).
+			Msg("Restart breaker: tripped container no longer exists and no container replaced it; clearing its entry without a resolved alert")
+	}
+
 	trippedKeys := result.Tripped
 	result.Tripped = serviceNames(keyed, trippedKeys)
-	result.Resolved = serviceNames(keyed, result.Resolved)
+
+	// A service is resolved only when none of its containers is still tripped:
+	// one replica recovering must not report a service resolved while another
+	// replica is still tripped. A later resolution of the last one reports it.
+	var resolved []string
+	for _, service := range serviceNames(keyed, result.Resolved) {
+		if serviceTripped(result.Updated, service) {
+			logger.Debug().
+				Str("service", service).
+				Msg("Restart breaker: a container recovered but another container of the service is still tripped; not reporting the service resolved")
+			continue
+		}
+		resolved = append(resolved, service)
+	}
+	result.Resolved = resolved
 
 	// Stop tripped containers (best-effort: attempt all, collect errors). Stop
 	// by the full ID that was inspected and ownership-checked: a name can be

@@ -175,6 +175,11 @@ type RestartTrackingEntry struct {
 	// stability interval. The next unchanged observation of the same container
 	// identity confirms that the interval was clean and permits resolution (#266).
 	StabilityPending bool `json:"stability_pending,omitempty"`
+	// ContainerNumber is the container's Compose container number (1 for
+	// "<project>-web-1"). A replacement of a gone container keeps it, so a new
+	// sibling with another number never inherits this entry. Empty on state
+	// written before it was recorded, and for containers without the label.
+	ContainerNumber string `json:"container_number,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.

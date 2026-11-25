@@ -23,6 +23,10 @@ const ComposeProjectLabel = "com.docker.compose.project"
 // ComposeServiceLabel is the label Docker Compose v2 sets for the service name.
 const ComposeServiceLabel = "com.docker.compose.service"
 
+// ComposeContainerNumberLabel is the label Docker Compose v2 sets to the
+// container's replica number within its service.
+const ComposeContainerNumberLabel = "com.docker.compose.container-number"
+
 // ServiceContainer is one container of a service, in any state.
 type ServiceContainer struct {
 	Name  string // Full Docker container name (for inspect calls)
