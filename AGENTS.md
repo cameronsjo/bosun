@@ -284,7 +284,9 @@ Spec PRs follow an iterative review cycle before implementation begins:
 5. **Label `ready-to-build`** — spec is stable, implementation can begin
 6. **Rate-limit handling**: If CodeRabbit doesn't review within ~5min, trigger manually with `@coderabbitai review`. The "Review triggered" ack ≠ a review will run — rate limits drop reviews silently; trust the check's `startedAt`/`completedAt`, not the ack comment. CodeRabbit is **advisory** here (`main` has no branch protection → `mergeStateStatus: UNSTABLE`, never `BLOCKED`), so a persistent stall or stale `CHANGES_REQUESTED` doesn't hard-block a merge — fall back to green CI + your own verification and document the call on the PR.
 
-The `ready-to-build` label is a gate: do not start implementation until it's applied. Use `/spec-review` to automate the cycle.
+The `ready-to-build` label is a gate: do not start implementation until it's applied.
+
+**Validate Spec pins openspec to 2.1.0** (`.github/workflows/spec-review.yml`). From 2.1.1, `validate --strict` fails a MODIFIED requirement over 500 characters, and some blocks on `main` (reconcile § File Deployment) already are. ADDED requirements over 500 characters fail under every version, and CI validates every change dir a PR touches, so editing `data-driven-deploy-paths` or `add-backup-integrity-semantics` fails on their existing blocks. Match CI with `npx @fission-ai/openspec@2.1.0 validate <id> --strict`; raise the pin only after splitting the long blocks. Use `/spec-review` to automate the cycle.
 
 ## Adding a New Command
 
