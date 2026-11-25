@@ -2,7 +2,7 @@
 
 ### Requirement: Service State Selection
 
-Where Declared vs Actual State Comparison and State-Based Skip Logic read a service's container, they SHALL read one container per service. A running or restarting container is live. A live container SHALL be selected when one exists, else a stopped one. Among those, the oldest by creation time wins, then the smallest container ID. Health and state changes between restarting and running SHALL NOT change the selection.
+Wherever Bosun reads a service's container from actual state (drift, skip check, post-deploy health poll, restart breaker), it SHALL read one selected container per service, superseding any per-container reading in Declared vs Actual State Comparison and State-Based Skip Logic. That container is a running or restarting one when any exists, else a stopped one; among those, the oldest by creation time, then the smallest container ID. Health and restarting-or-running changes SHALL NOT alter it.
 
 #### Scenario: Stopped container beside a running replica
 
@@ -11,11 +11,30 @@ Where Declared vs Actual State Comparison and State-Based Skip Logic read a serv
 - **AND** the drift report has no `missing` item for the service
 - **AND** the commit-already-deployed skip check counts the service as present
 
+#### Scenario: Health poll ignores a stopped leftover
+
+- **WHEN** a declared service has an exited container and a running container with no healthcheck, in either list order
+- **AND** the post-deploy health poll runs
+- **THEN** the poll counts the service as healthy
+- **AND** the poll does not wait out its timeout on the exited container
+
 #### Scenario: Every container stopped
 
 - **WHEN** every container of a declared service is exited
 - **THEN** the oldest container is observed, with ties broken by the smallest container ID
 - **AND** the drift report includes a `missing` item noting that container's state
+
+#### Scenario: Paused container counts as stopped
+
+- **WHEN** a declared service has only a paused container
+- **THEN** the paused container is observed as a stopped one
+- **AND** the drift report includes a `missing` item noting `state=paused`
+- **AND** the commit-already-deployed skip check does not count the service as present
+
+#### Scenario: Oldest wins among running replicas
+
+- **WHEN** a declared service has two running replicas created at different times
+- **THEN** the older replica is the observed container, in either list order
 
 #### Scenario: Selection ignores health
 
@@ -41,4 +60,4 @@ Where Declared vs Actual State Comparison and State-Based Skip Logic read a serv
 - **AND** a sibling replica is running
 - **THEN** the sibling becomes the observed container
 - **AND** the service's tripped entry stays tripped for the first sample on the sibling
-- **AND** it resolves on the next unchanged sample, with a resolved alert, while the stopped replica stays stopped
+- **AND** it resolves on the next sample whose restart count is unchanged, with a resolved alert, while the stopped replica stays stopped
