@@ -727,7 +727,7 @@ bosun drift --target=nas       # Show drift for a specific target
 
 ## Deploy State and Circuit Breaker
 
-The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A one-shot dry run uses a temporary copy of existing state, so it evaluates skip and circuit-breaker decisions without creating or updating the configured state path.
+The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A dry run, in the daemon or the one-shot command, never writes the state file: `Reconciler.Run` reads it for skip and circuit-breaker decisions and drops every write, so it is byte-identical afterwards (or still absent). The one-shot command also uses a temporary copy as a second barrier. With no state advancing, a dry-run daemon re-runs the whole pipeline, pre-deploy hooks included, on every poll. A dry run sends failure, success, and interruption alerts but no recovery alert, since it cannot record that a retraction was delivered. This covers `Reconciler.Run` only, not the daemon's periodic drift check.
 
 Container deployments MUST mount `/var/lib/bosun` on persistent writable
 storage. The shipped Compose and Unraid definitions use

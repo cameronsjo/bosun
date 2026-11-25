@@ -579,7 +579,7 @@ bosun daemon -i 1800
 
 | Flag | Description |
 |------|-------------|
-| `-n`, `--dry-run` | Dry run mode (no actual changes) |
+| `-n`, `--dry-run` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check is not covered by this flag |
 | `-p`, `--port` | HTTP server port (default: 8080) |
 | `-i`, `--poll-interval` | Poll interval in seconds (default: 3600, 0 disables) |
 
@@ -817,7 +817,9 @@ bosun reconcile --target=nas
 `--no-alerts` builds the reconciler with no alert manager, so no success,
 failure, interruption, unhealthy or recovery alert is sent, and configured
 providers are not listed. `--dry-run` does **not** imply it: a failing dry run
-alerts exactly like a failing real run unless you pass `--no-alerts` too.
+alerts exactly like a failing real run unless you pass `--no-alerts` too. A dry
+run sends no recovery alert, because it writes no deploy state and so cannot
+record that a retraction was delivered.
 
 **Workflow:**
 

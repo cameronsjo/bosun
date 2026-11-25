@@ -126,7 +126,9 @@ func ensureStateDirForCLI(stateFile string) error {
 // reconciliation should use. Real runs use the configured file after verifying
 // its parent. Dry runs use a temporary copy so skip and breaker decisions still
 // see current state, while simulated attempt/success writes cannot mutate
-// production state.
+// production state. This is a second barrier: Reconciler.Run already persists
+// nothing on a dry run (persistState), so the copy only matters if a future
+// writer bypasses it.
 func prepareStateFileForCLIRun(stateFile string, dryRun bool) (string, func(), error) {
 	return prepareStateFileForCLIRunWithSave(stateFile, dryRun, reconcile.SaveState)
 }

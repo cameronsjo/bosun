@@ -31,7 +31,10 @@ func newRecoverySkipFixture(t *testing.T, git GitOperations, seed *DeployState, 
 
 	alerter := &mockAlertSender{}
 	cfg := &Config{
-		DryRun:                  true,
+		// Not a dry run: these tests assert persisted failure-tracking state and
+		// delivered retractions, which a dry run neither writes nor sends. Every
+		// test here returns at a skip branch, before backup and deploy.
+		DryRun:                  false,
 		AllowEmptyDeclaredState: true,
 		LockFile:                privateLockPath(t, tmpDir, "reconcile.lock"),
 		StateFile:               stateFile,

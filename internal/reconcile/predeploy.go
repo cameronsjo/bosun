@@ -312,23 +312,3 @@ type preDeployHookError struct {
 
 func (e *preDeployHookError) Error() string   { return e.reason }
 func (e *preDeployHookError) Unwrap() []error { return e.causes }
-
-// undoDryRunAttempt restores the circuit-breaker counters a dry run bumped
-// before its pre-deploy hooks blocked it, so a preview never counts as a
-// failed deploy attempt.
-func (r *Reconciler) undoDryRunAttempt(ctx context.Context, state *DeployState, snapshot *attemptBudgetSnapshot) {
-	if snapshot == nil {
-		return
-	}
-	state.LastAttemptedCommit = snapshot.lastAttemptedCommit
-	state.AttemptCount = snapshot.attemptCount
-	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
-	if err := SaveState(r.config.StateFile, state); err != nil {
-		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).
-			Msg("Failed to restore attempt counters after a dry run blocked by pre-deploy hooks")
-		return
-	}
-	logger.Warn().
-		Int("attempt_count", state.AttemptCount).
-		Msg("Dry run blocked by pre-deploy hooks; no alert sent and the attempt is not counted")
-}
