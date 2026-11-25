@@ -532,8 +532,9 @@ func normalizeImage(image string) string {
 	if strings.Contains(image, "@") {
 		return image
 	}
-	// If no tag, append :latest
-	if !strings.Contains(image, ":") {
+	// A tag is a colon after the last slash. A colon before it belongs to a
+	// registry port ("localhost:5000/app"), not a tag.
+	if strings.LastIndex(image, ":") <= strings.LastIndex(image, "/") {
 		return image + ":latest"
 	}
 	return image
