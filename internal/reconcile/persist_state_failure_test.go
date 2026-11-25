@@ -12,6 +12,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// chmodOnRecoveryAlerter runs a callback when the retraction is dispatched. That
+// dispatch is the last step before the final success save, so it is where a
+// test can make only that save fail.
+type chmodOnRecoveryAlerter struct {
+	mockAlertSender
+	onRecovery func()
+}
+
+func (a *chmodOnRecoveryAlerter) SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error {
+	a.onRecovery()
+	return a.mockAlertSender.SendDeployRecovery(ctx, commit, target, priorFailures)
+}
+
+// TestRun_FinalStateWriteFailureKeepsRedeployMarker makes the state directory
+// read-only after the pre-deploy marker was written and before the final save.
+// The run still succeeds and sends its success alert, and the state keeps the
+// redeploy marker and the old commit, so the next run retries.
+func TestRun_FinalStateWriteFailureKeepsRedeployMarker(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
+	h := newRunHarness(t, false)
+	h.seed(t, &DeployState{
+		SchemaVersion:       2,
+		LastDeployedCommit:  "oldcommit",
+		LastAttemptedCommit: "bbb222",
+		AttemptCount:        2,
+		LastAlertedAttempt:  1,
+	})
+	stateDir := filepath.Dir(h.cfg.StateFile)
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	// Probe that the filesystem enforces directory write permission, then restore it.
+	require.NoError(t, os.Chmod(stateDir, 0o555))
+	if probe, probeErr := os.CreateTemp(stateDir, ".permission-check-*"); probeErr == nil {
+		require.NoError(t, probe.Close())
+		require.NoError(t, os.Remove(probe.Name()))
+		t.Skip("filesystem does not enforce directory write permission in this test environment")
+	}
+	require.NoError(t, os.Chmod(stateDir, 0o755))
+
+	alerter := &chmodOnRecoveryAlerter{onRecovery: func() {
+		require.NoError(t, os.Chmod(stateDir, 0o555))
+	}}
+	r := NewReconciler(h.cfg,
+		WithGitOperations(gitSyncing("aaa111", "bbb222")),
+		WithSecretsDecryptor(&mockSOPS{}),
+		WithDeployOps(&DeployOps{DryRun: true}),
+		WithAlerter(alerter),
+	)
+
+	require.NoError(t, r.Run(context.Background()), "a failed final save is logged, not fatal")
+
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+	assert.Equal(t, 1, alerter.deploySuccessCalls, "the success alert still sends")
+	state := LoadState(h.cfg.StateFile)
+	assert.True(t, state.NeedsRedeploy, "the pre-deploy marker survives, so the next run retries")
+	assert.Equal(t, "oldcommit", state.LastDeployedCommit)
+}
+
 // TestRun_StateWriteFailureIsLoggedNotFatal injects a failed state write (the
 // state directory is read-only) into each persisting exit that logs the failure
 // and carries on. It pins that a failed save neither aborts the run nor
