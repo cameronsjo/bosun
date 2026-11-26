@@ -695,6 +695,23 @@ and circuit-breaker decisions as reconciliation, but writes simulated state to
 a temporary copy that is removed when validation exits. It never updates the
 daemon's configured state file.
 
+`validate` builds its reconciler configuration the way `bosun reconcile` does: the
+same environment variables (`REPO_DIR`, `STAGING_DIR`, `BOSUN_INFRA_DIR`,
+`BOSUN_SECRETS_FILE`, `BOSUN_STATE_DIR`, `BOSUN_TARGETS` and the rest) and the same
+`bosun.yaml`, so a configuration that `reconcile` refuses to start on is reported
+by `validate`: an invalid hook list, a missing age identity for the secrets files,
+targets that cannot be resolved (a reserved `default` name, nested staging paths,
+colliding resources), and a `BOSUN_TARGETS` that is not valid JSON (`reconcile`
+only logs a warning for that one and runs the default target).
+
+The quick check changes nothing. `--full` is not read-only: it runs one dry run per
+target, and like `reconcile --dry-run` it decrypts secrets with your age key and
+renders into the staging directory. It leaves the rendered tree there secured at
+restricted permissions, may delete a leftover staging tree it cannot secure, and on
+a staging directory shared with the daemon replaces the last staging evidence. It
+differs from `reconcile --dry-run` in three ways: it runs no pre-deploy or
+post-sync hooks, it sends no alerts, and it ignores `FORCE`.
+
 **Checks:**
 
 1. Environment variables (REPO_URL, etc.)
