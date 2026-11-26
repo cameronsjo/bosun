@@ -35,7 +35,7 @@ Configuration via environment variables:
   REPO_BRANCH / BOSUN_REPO_BRANCH Git branch to track (default: main)
   BOSUN_GIT_USERNAME / BOSUN_GIT_TOKEN  Paired private HTTPS Git credentials
   WEBHOOK_SECRET / GITHUB_WEBHOOK_SECRET  Webhook signature validation
-  POLL_INTERVAL / BOSUN_POLL_INTERVAL     Poll interval in seconds (default: 3600)
+  POLL_INTERVAL / BOSUN_POLL_INTERVAL     Poll interval in seconds or a Go duration (default: 3600, 0 disables)
   PORT / WEBHOOK_PORT              HTTP server port (default: 8080)
   DISCORD_WEBHOOK_URL              Discord notifications
   SENDGRID_API_KEY                 SendGrid email notifications

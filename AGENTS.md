@@ -429,7 +429,7 @@ do not gain legacy aliases.
 | `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | daemon | Cooldown between repeated drift alerts (default: `1h`) |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | daemon | Debounce window before first drift alert fires (default: `0` = disabled) |
-| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`). A resolved item is always retired from the alerted state, whether or not a notification is sent |
 | `BOSUN_DRIFT_SELF_HEAL` | daemon | Trigger reconciliation when drift detected (default: `false`) |
 | `BOSUN_DRIFT_SELF_HEAL_COOLDOWN` | daemon | Minimum interval between self-heal reconciliations (default: `15m`) |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | daemon | Positive attempt bound for one stable drift signature (default: `3`; persisted across daemon restarts) |
