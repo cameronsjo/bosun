@@ -359,7 +359,7 @@ func TestCopyFileIfChangedHashCollisionFallsBackToCopy(t *testing.T) {
 			}
 
 			changed, verify, err := copyFileIfChangedDeferredWithOps(
-				context.Background(), src, dst, hashFile, compare, copyFileWithoutDirSyncContext,
+				context.Background(), src, dst, hashFile, hashFile, compare, copyFileWithoutDirSyncContext,
 			)
 
 			require.NoError(t, err)

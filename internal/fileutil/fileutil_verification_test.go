@@ -41,10 +41,12 @@ func TestCopyFileIfChanged_PostWriteVerificationFailureReportsWrite(t *testing.T
 			src := filepath.Join(tmpDir, "source.yml")
 			dst := filepath.Join(tmpDir, "destination.yml")
 			require.NoError(t, os.WriteFile(src, []byte("new content"), 0o644))
+			// hashFile sees the destination comparison (call 1) and the post-write
+			// re-read (call 2); the source is hashed by sourceHashContext.
 			hashCalls := 0
 			hashFile := func(hashCtx context.Context, path string) ([sha256.Size]byte, error) {
 				hashCalls++
-				if hashCalls == 3 {
+				if hashCalls == 2 {
 					return tt.postHash(hashCtx, path)
 				}
 				return fileHashContext(hashCtx, path)
@@ -54,7 +56,7 @@ func TestCopyFileIfChanged_PostWriteVerificationFailureReportsWrite(t *testing.T
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrPostWriteVerification)
-			assert.Equal(t, 3, hashCalls)
+			assert.Equal(t, 2, hashCalls)
 			assert.True(t, changed, "the successful rename must remain visible to change tracking")
 			content, readErr := os.ReadFile(dst)
 			require.NoError(t, readErr)

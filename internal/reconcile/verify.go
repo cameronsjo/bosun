@@ -254,9 +254,11 @@ func destinationSatisfiesSource(src, dst string) (sawFiles bool, mismatch string
 
 // fileEqual reports whether dst exists and is byte-identical to src, using the
 // same SHA-256 comparison CopyFileIfChanged relies on. A missing dst is
-// (false, nil) — i.e. a mismatch, not an error.
+// (false, nil) — i.e. a mismatch, not an error. The source is hashed without
+// following a symlink: callers select regular files by Lstat, so a link here
+// was swapped in after that check and returns fileutil.ErrSymlinkSkipped.
 func fileEqual(src, dst string) (bool, error) {
-	srcHash, err := fileutil.FileHash(src)
+	srcHash, err := fileutil.SourceHash(src)
 	if err != nil {
 		return false, err
 	}

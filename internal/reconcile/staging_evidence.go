@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
@@ -23,6 +24,10 @@ type stagingEvidenceOps struct {
 	chmodPath func(string, fs.FileMode) error
 	mkdirAll  func(context.Context, string, fs.FileMode) error
 	removeAll func(string) error
+	// openFile opens a regular staging file relative to its pinned directory.
+	// The default never follows a final-component symlink and never blocks on
+	// a FIFO, so an entry swapped after its Lstat fails instead of hanging.
+	openFile func(*os.Root, string) (*os.File, error)
 }
 
 func defaultStagingEvidenceOps() stagingEvidenceOps {
@@ -34,7 +39,12 @@ func defaultStagingEvidenceOps() stagingEvidenceOps {
 		chmodPath: os.Chmod,
 		mkdirAll:  mkdirAllContext,
 		removeAll: os.RemoveAll,
+		openFile:  openStagingFile,
 	}
+}
+
+func openStagingFile(namespace *os.Root, name string) (*os.File, error) {
+	return fileutil.OpenRootRegular(namespace, name, false)
 }
 
 func (ops stagingEvidenceOps) withDefaults() stagingEvidenceOps {
@@ -53,6 +63,9 @@ func (ops stagingEvidenceOps) withDefaults() stagingEvidenceOps {
 	}
 	if ops.removeAll == nil {
 		ops.removeAll = defaults.removeAll
+	}
+	if ops.openFile == nil {
+		ops.openFile = defaults.openFile
 	}
 	return ops
 }
@@ -245,7 +258,7 @@ func walkPinnedStagingDir(namespace *os.Root, pinned *os.File, opened fs.FileInf
 				return walkErr
 			}
 		} else {
-			child, err := namespace.Open(name)
+			child, err := ops.openFile(namespace, name)
 			if err != nil {
 				return fmt.Errorf("pin staging file %q: %w", entryPath, err)
 			}

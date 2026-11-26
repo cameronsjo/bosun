@@ -351,8 +351,17 @@ func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	source, _, err := openRegularSource(src, true)
+	// Refuse a source the copy path never deploys before the destination root
+	// can be created below: a skipped or invalid source mutates nothing.
+	skip, err := checkIfChangedSource(src)
+	if err != nil || skip {
+		return false, nil, err
+	}
+	source, _, err := openRegularSource(src, false)
 	if err != nil {
+		if isSkippedSource(src, err) {
+			return false, nil, nil
+		}
 		return false, nil, err
 	}
 	_ = source.Close()
@@ -393,8 +402,11 @@ func copyFileIfChangedDeferredAtRoot(
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	srcHash, err := fileHashContext(ctx, src)
+	srcHash, err := sourceHashContext(ctx, src)
 	if err != nil {
+		if isSkippedSource(src, err) {
+			return false, nil, nil
+		}
 		return false, nil, fmt.Errorf("hash source: %w", err)
 	}
 
@@ -409,7 +421,7 @@ func copyFileIfChangedDeferredAtRoot(
 			if _, seekErr := dstFile.Seek(0, io.SeekStart); seekErr != nil {
 				return false, nil, fmt.Errorf("rewind destination comparison: %w", seekErr)
 			}
-			srcFile, _, srcErr := openRegularSource(src, true)
+			srcFile, _, srcErr := openRegularSource(src, false)
 			if srcErr != nil {
 				return false, nil, fmt.Errorf("open source comparison: %w", srcErr)
 			}

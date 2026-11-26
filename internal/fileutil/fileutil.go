@@ -507,6 +507,58 @@ func fileHashContextWithOpen(
 	return hashReader(ctx, f)
 }
 
+// SourceHash computes the SHA-256 hash of a copy source without following a
+// final-component symlink. It is FileHash's contract for a path the copy path
+// would deploy: a symlink returns ErrSymlinkSkipped, any other non-regular
+// entry returns ErrUnsupportedFileType, and neither is opened or read.
+func SourceHash(path string) ([sha256.Size]byte, error) {
+	return sourceHashContext(context.Background(), path)
+}
+
+// sourceHashOps holds the source inspection and open operations so tests can
+// inject a swap between them without a package-global seam.
+type sourceHashOps struct {
+	lstat func(string) (fs.FileInfo, error)
+	open  func(string, bool) (*os.File, fs.FileInfo, error)
+}
+
+func defaultSourceHashOps() sourceHashOps {
+	return sourceHashOps{lstat: os.Lstat, open: openRegularSource}
+}
+
+func sourceHashContext(ctx context.Context, path string) ([sha256.Size]byte, error) {
+	return sourceHashContextWithOps(ctx, path, defaultSourceHashOps())
+}
+
+// sourceHashContextWithOps hashes path only when it is a regular file at Lstat
+// and the opened descriptor is that same file. The open never follows a
+// final-component symlink and never blocks on a FIFO, so a path replaced after
+// the Lstat is refused instead of read through.
+func sourceHashContextWithOps(ctx context.Context, path string, ops sourceHashOps) ([sha256.Size]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	before, err := ops.lstat(path)
+	if err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("inspect source: %w", err)
+	}
+	if before.Mode()&os.ModeSymlink != 0 {
+		return [sha256.Size]byte{}, ErrSymlinkSkipped
+	}
+	if err := validateRegularFile(path, before); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	f, opened, err := ops.open(path, false)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	defer func() { _ = f.Close() }()
+	if !os.SameFile(before, opened) {
+		return [sha256.Size]byte{}, fmt.Errorf("source changed while hashing %s", path)
+	}
+	return hashReader(ctx, f)
+}
+
 func hashReader(ctx context.Context, reader io.Reader) ([sha256.Size]byte, error) {
 	h := sha256.New()
 	if _, err := io.Copy(h, contextReader{ctx: ctx, reader: reader}); err != nil {
@@ -551,6 +603,18 @@ const contentCompareBufferSize = 32 * 1024
 func filesEqualContext(ctx context.Context, aPath, bPath string) (bool, error) {
 	return filesEqualContextWithOpen(ctx, aPath, bPath, func(path string) (io.ReadCloser, error) {
 		file, _, err := openRegularSource(path, true)
+		return file, err
+	})
+}
+
+// sourceFilesEqualContext is filesEqualContext for a copy source and its
+// destination: the source (aPath) is opened without following a
+// final-component symlink, the destination keeps filesEqualContext's
+// path-resolved open.
+func sourceFilesEqualContext(ctx context.Context, srcPath, dstPath string) (bool, error) {
+	return filesEqualContextWithOpen(ctx, srcPath, dstPath, func(path string) (io.ReadCloser, error) {
+		follow := path != srcPath
+		file, _, err := openRegularSource(path, follow)
 		return file, err
 	})
 }
@@ -663,18 +727,51 @@ func copyFileIfChangedDeferredWithoutDirSync(ctx context.Context, src, dst strin
 	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, fileHashContext, copyFileWithoutDirSyncContext)
 }
 
+// copyFileIfChangedDeferredWithCopy hashes the source with sourceHashContext,
+// which never follows a source symlink; hashFile covers only the destination
+// comparison and the post-write verification.
 func copyFileIfChangedDeferredWithCopy(
 	ctx context.Context,
 	src, dst string,
 	hashFile func(context.Context, string) ([sha256.Size]byte, error),
 	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
-	return copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, filesEqualContext, copyFile)
+	return copyFileIfChangedDeferredWithOps(ctx, src, dst, sourceHashContext, hashFile, sourceFilesEqualContext, copyFile)
+}
+
+// checkIfChangedSource refuses a source the copy path never deploys before any
+// hash, comparison, or destination mutation, using Lstat so a link is never
+// followed. skip reports the documented benign symlink skip; other non-regular
+// entries and inspection failures are errors.
+func checkIfChangedSource(src string) (skip bool, err error) {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return false, fmt.Errorf("inspect source: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		warnSymlinkSkipped(src)
+		return true, nil
+	}
+	if err := validateRegularFile(src, info); err != nil {
+		return false, fmt.Errorf("inspect source: %w", err)
+	}
+	return false, nil
+}
+
+// isSkippedSource maps a source swapped for a symlink after
+// checkIfChangedSource to the same benign skip.
+func isSkippedSource(src string, err error) bool {
+	if errors.Is(err, ErrSymlinkSkipped) {
+		warnSymlinkSkipped(src)
+		return true
+	}
+	return false
 }
 
 func copyFileIfChangedDeferredWithOps(
 	ctx context.Context,
 	src, dst string,
+	hashSource func(context.Context, string) ([sha256.Size]byte, error),
 	hashFile func(context.Context, string) ([sha256.Size]byte, error),
 	filesEqual func(context.Context, string, string) (bool, error),
 	copyFile func(context.Context, string, string) error,
@@ -682,8 +779,15 @@ func copyFileIfChangedDeferredWithOps(
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	srcHash, err := hashFile(ctx, src)
+	skip, err := checkIfChangedSource(src)
+	if err != nil || skip {
+		return false, nil, err
+	}
+	srcHash, err := hashSource(ctx, src)
 	if err != nil {
+		if isSkippedSource(src, err) {
+			return false, nil, nil
+		}
 		return false, nil, fmt.Errorf("hash source: %w", err)
 	}
 

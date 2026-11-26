@@ -210,7 +210,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return hashReader(hashCtx, &cancelAfterFirstRead{cancel: cancel})
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, filesEqualContext, func(context.Context, string, string) error {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, hashFile, filesEqualContext, func(context.Context, string, string) error {
 			copyCalls++
 			return nil
 		})
@@ -240,7 +240,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return fileHashContext(hashCtx, path)
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, func(context.Context, string, string) (bool, error) {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, hashFile, func(context.Context, string, string) (bool, error) {
 			compareCalls++
 			return true, nil
 		}, func(context.Context, string, string) error {
@@ -270,7 +270,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return readersEqualContext(compareCtx, &cancelAfterFirstRead{cancel: cancel}, strings.NewReader("x"))
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, fileHashContext, filesEqual, func(context.Context, string, string) error {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, fileHashContext, fileHashContext, filesEqual, func(context.Context, string, string) error {
 			copyCalls++
 			return nil
 		})
@@ -299,7 +299,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return fileHashContext(hashCtx, path)
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, filesEqualContext, func(copyCtx context.Context, src, dst string) error {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, hashFile, filesEqualContext, func(copyCtx context.Context, src, dst string) error {
 			copyCalls++
 			return copyFileWithoutDirSyncContext(copyCtx, src, dst)
 		})
