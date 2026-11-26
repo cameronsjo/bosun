@@ -380,6 +380,7 @@ When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the last *success
 
 - **Diff base is the last successful deploy** — uses `state.LastDeployedCommit`, not the git pull's `commit_before`. After a failed reconciliation, the next diff covers all files since the last successful deploy, ensuring files from failed attempts are re-evaluated
 - **First deploy runs full pipeline** — when there is no prior deploy state, the path-aware check is skipped entirely (everything is deploy-relevant)
+- **A pending redeploy runs the full pipeline** — after a partial failure (`needs_redeploy` set) the check is skipped too, because the failed deploy synced files that the last deployed commit does not describe. A later commit that reverts its changes shows no deploy-relevant path, and skipping would clear the marker and leave those files on disk
 - **Allowlist model** — only listed paths trigger a deploy; new directories require explicit opt-in
 - **`--force` bypasses** — `bosun reconcile -f` always runs the full pipeline regardless of path matching
 - **Configurable shallow history** — clone and fetch use depth 1 by default; set `BOSUN_GIT_FETCH_DEPTH` to a larger positive integer when deploy diffs routinely span multiple commits
@@ -392,7 +393,7 @@ After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo
 
 Hook fields use presence-aware snapshots. A successfully loaded file with an omitted or empty `post_sync_hooks` clears file hooks, while an omitted `hook_settle_delay` retains its previous effective value and explicit `0s` clears it. A valid empty file is successful; a missing, unreadable, malformed, unknown-field, or invalid-hook file retains the prior hook/delay state, and hook validation finishes before either value changes. Target hooks inherit root when omitted, clear inheritance with explicit `[]`, and fall back to root when their target descriptor disappears pending the required daemon restart for topology changes.
 
-Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. Target hook lists supplied through `BOSUN_TARGETS` likewise remain environment-owned. Reload logs report source, target, outcome, and hook count without printing executable command arguments.
+Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. Target hook lists supplied through `BOSUN_TARGETS` likewise remain environment-owned, and so do a target's `critical_containers`, `deploy_sync_paths`, and `deploy_sync_exclude` lists. Those three follow one order: a `BOSUN_TARGETS` list beats the global variable (`BOSUN_CRITICAL_CONTAINERS`, `BOSUN_DEPLOY_SYNC_PATHS`, `BOSUN_DEPLOY_SYNC_EXCLUDE`), which beats the repo file, and a target declared in `bosun.yaml` never replaces a list the global variable set. Under `BOSUN_TARGETS` a repo `targets:` entry with the same name still supplies the lists the environment target omits, while hooks do not consult repo targets in that mode; a global `BOSUN_POST_SYNC_HOOKS` beats `BOSUN_TARGETS` hooks. Reload logs report source, target, outcome, and hook count without printing executable command arguments.
 
 ### Lock Behavior
 
@@ -944,9 +945,9 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
 | `BOSUN_HOOK_SETTLE_DELAY` | safe FUSE fallback when unset | Global pause before post-sync hooks run (e.g., `2s`); explicit `0s` disables it |
 | `BOSUN_DEPLOY_PATHS` | | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
-| `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
-| `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
-| `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
+| `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file, including `targets:` entries in it; a `BOSUN_TARGETS` list overrides it for that target) |
+| `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file, including `targets:` entries in it; a `BOSUN_TARGETS` list overrides it for that target; exclude wins over include) |
+| `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file, including `targets:` entries in it; a `BOSUN_TARGETS` list overrides it for that target) |
 | `BOSUN_DRIFT_IGNORE` | | JSON array of `{"service","type"}` rules to suppress known drift noise (overrides config file) |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | `3` | Positive attempt bound for one stable drift signature; persisted across daemon restarts |
 | `BOSUN_TARGETS` | | JSON array of target definitions (overrides `targets:` in config file) |

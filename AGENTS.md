@@ -412,8 +412,8 @@ do not gain legacy aliases.
 | `BOSUN_POST_SYNC_HOOKS` | daemon, reconcile | JSON array overriding config file hooks |
 | `BOSUN_HOOK_SETTLE_DELAY` | daemon, reconcile | Global pause before post-sync hooks run. When no file value or valid environment duration is configured and the effective local deploy path is exactly `/mnt/user` or beneath it, bosun applies a 2-second fallback. A valid environment duration overrides the file, including `0s`; invalid environment input is ignored in favor of the file value or applicable omitted-value default. An unconfigured non-`/mnt/user` path retains zero delay |
 | `BOSUN_DEPLOY_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
-| `BOSUN_DEPLOY_SYNC_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
-| `BOSUN_DEPLOY_SYNC_EXCLUDE` | daemon, reconcile | JSON array of glob patterns for deploy sync target blocklist (overrides config file) |
+| `BOSUN_DEPLOY_SYNC_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy sync target allowlist (overrides config file, including `targets:` entries in it; a `BOSUN_TARGETS` list overrides it for that target) |
+| `BOSUN_DEPLOY_SYNC_EXCLUDE` | daemon, reconcile | JSON array of glob patterns for deploy sync target blocklist (overrides config file, including `targets:` entries in it; a `BOSUN_TARGETS` list overrides it for that target) |
 | `BOSUN_COMPOSE_UP_TIMEOUT` | daemon, reconcile | Timeout for `docker compose up`, applied to each compose file separately during isolated compose up (default: `10m`; accepts Go durations or plain seconds) |
 | `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout applied independently to pre-deploy backup creation + verification and post-success retention verification + cleanup (default: `5m`; accepts Go durations or plain seconds). A pre-deploy timeout may fall back to an older verified rollback anchor; a retention timeout warns, preserves remaining backups, and does not revoke deploy success |
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
@@ -435,7 +435,7 @@ do not gain legacy aliases.
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | daemon | Positive attempt bound for one stable drift signature (default: `3`; persisted across daemon restarts) |
 | `BOSUN_CONTENT_HASH_SYNC` | daemon, reconcile | Compare file hashes before writing to skip unchanged files (default: `true`) |
 | `BOSUN_REMOVE_ORPHANS` | daemon, reconcile | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file) |
-| `BOSUN_CRITICAL_CONTAINERS` | daemon, reconcile | JSON array of container names that must be healthy after deploy (overrides config file) |
+| `BOSUN_CRITICAL_CONTAINERS` | daemon, reconcile | JSON array of container names that must be healthy after deploy (overrides config file, including `targets:` entries in it; a `BOSUN_TARGETS` list overrides it for that target) |
 | `BOSUN_DRIFT_IGNORE` | daemon, reconcile | JSON array of `{service, type}` rules to suppress known drift noise (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | daemon, reconcile | Health gate polling timeout (default: `60s`; `0` disables) |
 | `BOSUN_HEALTH_GATE_SCOPE` | daemon, reconcile | What the post-compose-up health gate polls and rolls back on: `critical` (default — only `critical_containers` members), `declared` (all declared services, with the #392 pre-existing-casualty exemption), or `off` (no gate). Unknown values are ignored with a warning. Overrides config file `health_gate_scope` |

@@ -1,5 +1,7 @@
 package reconcile
 
+import "reflect"
+
 // ConfigSource tracks where a configuration value originated.
 // Environment variables always take precedence over config file values
 // during hot-reload — fields with SourceEnv are never overwritten.
@@ -55,12 +57,15 @@ func FileConfigField[T any](v T) ConfigField[T] {
 // 1. The field was not set from an environment variable, AND
 // 2. The reloaded value passes the isSet predicate (non-nil for slices, non-zero for scalars).
 //
-// Returns true if the field was updated.
+// The reloaded value is always applied and the field becomes file-sourced, but
+// the return value reports whether the VALUE changed: a reload that repeats what
+// the field already holds returns false, so callers can stay quiet about it.
 func reloadField[T any](field *ConfigField[T], reloaded T, isSet func(T) bool) bool {
 	if field.FromEnv() || !isSet(reloaded) {
 		return false
 	}
+	changed := !reflect.DeepEqual(field.Value, reloaded)
 	field.Value = reloaded
 	field.Source = SourceFile
-	return true
+	return changed
 }

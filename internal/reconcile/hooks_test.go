@@ -204,6 +204,14 @@ func TestDedupeHooksByContainer(t *testing.T) {
 			},
 			want: 1,
 		},
+		{
+			name: "empty action and restart are the same hook",
+			hooks: []PostSyncHook{
+				{Container: "traefik"},
+				{Container: "traefik", Action: "restart"},
+			},
+			want: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -243,6 +251,45 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		assert.Equal(t, []string{"traefik"}, restarted)
+	})
+
+	t.Run("empty action defaults to restart", func(t *testing.T) {
+		var restarted []string
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+			restarted = append(restarted, containerID)
+			return client.ContainerRestartResult{}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Paths: []string{"traefik/**"}, Container: "traefik"},
+		}
+
+		require.NoError(t, ExecutePostSyncHooks(context.Background(), client, hooks, 0))
+		assert.Equal(t, []string{"traefik"}, restarted, "an omitted action is documented as restart")
+	})
+
+	t.Run("empty action with a command restarts and never infers exec", func(t *testing.T) {
+		var restarted, execed []string
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+			restarted = append(restarted, containerID)
+			return client.ContainerRestartResult{}, nil
+		}
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, containerID string, _ client.ExecCreateOptions) (client.ExecCreateResult, error) {
+			execed = append(execed, containerID)
+			return client.ExecCreateResult{ID: "mock-exec-id"}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Container: "x", Command: []string{"sh", "-c", "id"}},
+		}
+
+		require.NoError(t, ExecutePostSyncHooks(context.Background(), client, hooks, 0))
+		assert.Equal(t, []string{"x"}, restarted)
+		assert.Empty(t, execed, "a command alone must not turn an omitted action into exec")
 	})
 
 	t.Run("unsupported action is skipped with no error", func(t *testing.T) {

@@ -46,15 +46,24 @@ func ValidatePostSyncHooks(hooks []PostSyncHook) error {
 	return nil
 }
 
+// defaultHookAction is the action a hook runs when its action is omitted.
+const defaultHookAction = "restart"
+
+// effectiveAction returns the action the hook runs: an omitted action means
+// restart. A command alone never turns an omitted action into exec.
+func (h PostSyncHook) effectiveAction() string {
+	if h.Action == "" {
+		return defaultHookAction
+	}
+	return h.Action
+}
+
 // hookKey returns a deduplication key for a hook.
 // Different actions on the same container are distinct hooks (e.g., restart + exec).
 // For exec hooks, the command is included so two different commands on the same
 // container are treated as separate hooks.
 func hookKey(h PostSyncHook) string {
-	action := h.Action
-	if action == "" {
-		action = "restart"
-	}
+	action := h.effectiveAction()
 	key := h.Container + ":" + action
 	if action == "exec" && len(h.Command) > 0 {
 		key += ":" + strings.Join(h.Command, " ")
@@ -200,10 +209,12 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 
 	var errs []string
 	for _, hook := range hooks {
+		action := hook.effectiveAction()
+
 		// Per-hook delay: wait before executing this hook's action.
 		if hook.Delay.Duration > 0 {
-			logger.Info().Dur("delay", hook.Delay.Duration).Str("container", hook.Container).Str("action", hook.Action).Msg("Waiting before hook execution")
-			ui.Info("  Waiting %s before %s on %s...", hook.Delay.Duration, hook.Action, hook.Container)
+			logger.Info().Dur("delay", hook.Delay.Duration).Str("container", hook.Container).Str("action", action).Msg("Waiting before hook execution")
+			ui.Info("  Waiting %s before %s on %s...", hook.Delay.Duration, action, hook.Container)
 			select {
 			case <-time.After(hook.Delay.Duration):
 			case <-ctx.Done():
@@ -211,7 +222,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 			}
 		}
 
-		switch hook.Action {
+		switch action {
 		case "restart":
 			logger.Info().
 				Str("container", hook.Container).
@@ -249,7 +260,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 
 		default:
 			logger.Warn().
-				Str("action", hook.Action).
+				Str("action", action).
 				Str("container", hook.Container).
 				Msg("Unsupported post-sync hook action, skipping")
 		}

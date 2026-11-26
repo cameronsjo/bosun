@@ -131,11 +131,8 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	cp.SecretsFiles = cloneSlice(cp.SecretsFiles)
 	cp.DeployPaths.Value = cloneSlice(cp.DeployPaths.Value)
 	cp.DriftIgnore.Value = cloneSlice(cp.DriftIgnore.Value)
-	if t.CriticalContainers != nil {
-		cp.CriticalContainers.Value = cloneSlice(t.CriticalContainers)
-	} else if cp.CriticalContainers.Value != nil {
-		cp.CriticalContainers.Value = cloneSlice(cp.CriticalContainers.Value)
-	}
+	applyTargetList(&cp.CriticalContainers, t.CriticalContainers,
+		c.targetFieldFromEnv(t, func(x Target) bool { return x.CriticalContainers != nil }))
 	if t.PostSyncHooks != nil && !cp.PostSyncHooks.FromEnv() {
 		if c.targetHooksFromEnv(t) {
 			// A target-specific hook list supplied by BOSUN_TARGETS is an
@@ -149,16 +146,10 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	} else if cp.PostSyncHooks.Value != nil {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(cp.PostSyncHooks.Value)
 	}
-	if t.DeploySyncPaths != nil {
-		cp.DeploySyncPaths.Value = cloneSlice(t.DeploySyncPaths)
-	} else if cp.DeploySyncPaths.Value != nil {
-		cp.DeploySyncPaths.Value = cloneSlice(cp.DeploySyncPaths.Value)
-	}
-	if t.DeploySyncExclude != nil {
-		cp.DeploySyncExclude.Value = cloneSlice(t.DeploySyncExclude)
-	} else if cp.DeploySyncExclude.Value != nil {
-		cp.DeploySyncExclude.Value = cloneSlice(cp.DeploySyncExclude.Value)
-	}
+	applyTargetList(&cp.DeploySyncPaths, t.DeploySyncPaths,
+		c.targetFieldFromEnv(t, func(x Target) bool { return x.DeploySyncPaths != nil }))
+	applyTargetList(&cp.DeploySyncExclude, t.DeploySyncExclude,
+		c.targetFieldFromEnv(t, func(x Target) bool { return x.DeploySyncExclude != nil }))
 	if t.ComposeIgnore != nil {
 		if c.targetFieldFromEnv(t, func(x Target) bool { return x.ComposeIgnore != nil }) {
 			// A BOSUN_TARGETS list (explicit [] included) is env-owned, so the
@@ -187,6 +178,32 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	}
 
 	return &cp
+}
+
+// applyTargetList applies one target's list override to a per-target config
+// field, keeping the field's source honest so a later repo reload cannot undo
+// an operator's environment setting. Precedence, highest first:
+//
+//  1. A list from BOSUN_TARGETS (override from env, explicit [] included) wins
+//     over the global environment variable: both are environment, and the
+//     target's list is the more specific. The field becomes env-owned.
+//  2. A list from a file target never replaces a field already set by its
+//     global environment variable. The repo is lower trust than the operator,
+//     and an empty file list must not clear an environment blocklist.
+//  3. Otherwise the target's list replaces the value and the source is kept.
+//
+// A nil override inherits the base value. Every slice is cloned.
+func applyTargetList(dst *ConfigField[[]string], override []string, overrideFromEnv bool) {
+	switch {
+	case override == nil || (dst.FromEnv() && !overrideFromEnv):
+		if dst.Value != nil {
+			dst.Value = cloneSlice(dst.Value)
+		}
+	case overrideFromEnv:
+		*dst = EnvConfigField(cloneSlice(override))
+	default:
+		dst.Value = cloneSlice(override)
+	}
 }
 
 // targetHooksFromEnv reports whether t carries an explicit hook override from
