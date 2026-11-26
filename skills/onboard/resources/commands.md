@@ -250,7 +250,7 @@ bosun migrate helm --force     # Overwrite existing charts
 | `version` | `--provisions` / `--services` / `--stacks` | | Override the directories to scan |
 | `helm` | `--force` | `false` | Overwrite existing charts |
 
-`migrate version` writes a file only when the result is one YAML document with both `apiVersion` and `kind`. A leading `---` marker stays first with the header after it; a file with only one of the two keys gets only the missing one (an existing value is kept, an empty one is replaced in place). A file it cannot migrate into one valid manifest, such as one holding several YAML documents or a flow-style top level, is reported as an error and left unchanged, in dry-run too. It processes every file, then exits non-zero if any reported an error.
+`migrate version` writes a file only when the result is one YAML document with both `apiVersion` and `kind`. A leading `---` marker stays first with the header after it; a file with only one of the two keys gets only the missing one (an existing value is kept, an empty one is replaced in place). A file it cannot migrate into one valid manifest, such as one holding several YAML documents (a closing `---` after the body starts a second, empty document and counts), a flow-style top level, or a first line that is `---` followed by content, is reported as an error and left unchanged, in dry-run too. It processes every file, then exits non-zero if any reported an error.
 
 ---
 

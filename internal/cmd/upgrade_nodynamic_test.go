@@ -18,7 +18,7 @@ func TestUpgradeTraefikCmd_NoDynamicDirectory(t *testing.T) {
 	compose := filepath.Join(t.TempDir(), "compose.yml")
 	require.NoError(t, os.WriteFile(compose, []byte("services:\n  traefik:\n    image: traefik:v3.2\n"), 0o644))
 
-	_, err := executeCmd(t, "upgrade", "traefik", "--compose", compose, "--yes")
+	_, err := executeCmd(t, "upgrade", "traefik", "--help=false", "--compose", compose, "--yes")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--dynamic", "the error names the flag that supplies the directory")

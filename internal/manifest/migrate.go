@@ -232,6 +232,11 @@ func addVersionHeader(data []byte, detected string) ([]byte, string, error) {
 			return nil, "", err
 		}
 		if marker >= 0 {
+			// A marker that is the last line has no line ending yet, and the
+			// header would be glued to it.
+			if !strings.HasSuffix(lines[marker], "\n") {
+				lines[marker] += newline
+			}
 			at = marker + 1
 		}
 		insert(at, apiLine, kindLine)
