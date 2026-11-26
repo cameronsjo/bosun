@@ -43,8 +43,10 @@ post_sync_hooks:
 `
 
 // validateTwoTargets declares two targets; the first has a pre-deploy hook of
-// its own, which ConfigForTarget copies onto that target's config.
-const validateTwoTargets = `[{"name":"a","pre_deploy_hooks":[{"name":"target-gate","command":["true"]}]},{"name":"b"}]`
+// its own, which ConfigForTarget copies onto that target's config. Each names its
+// own compose project, because two targets on one host may not share a Docker
+// namespace.
+const validateTwoTargets = `[{"name":"a","project_name":"proj-a","pre_deploy_hooks":[{"name":"target-gate","command":["true"]}]},{"name":"b","project_name":"proj-b"}]`
 
 // setValidatePaths points the path variables at temporary directories and
 // returns them.
