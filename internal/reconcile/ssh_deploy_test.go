@@ -259,35 +259,15 @@ func TestEnsureRemoteDir_EndToEnd(t *testing.T) {
 	assert.DirExists(t, dir)
 }
 
-// setupSCPShim installs a fake `scp` ahead of PATH that performs a local copy
-// (`scp [-o opt]... -q <src> <host:dst>` → `cp <src> <dst>`), skipping the
-// leading host-key policy flags and stripping the `host:` prefix. Pairs with
-// setupSSHShim so DeployRemoteFile's scp-then-ssh-mv flow runs locally.
-func setupSCPShim(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	shim := "#!/bin/sh\n" +
-		"while [ $# -gt 0 ]; do\n" +
-		"  case \"$1\" in\n" +
-		"    -o) shift 2 ;;\n" +
-		"    -*) shift ;;\n" +
-		"    *) break ;;\n" +
-		"  esac\n" +
-		"done\n" +
-		"src=\"$1\"\n" +
-		"dst=\"${2#*:}\"\n" +
-		"exec cp \"$src\" \"$dst\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "scp"), []byte(shim), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 func TestDeployRemoteFile_EndToEnd(t *testing.T) {
 	setupSSHShim(t)
-	setupSCPShim(t)
+	callLog := setupSCPTripwire(t)
 	base := t.TempDir()
 	source := filepath.Join(base, "config.yml")
 	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
-	target := filepath.Join(base, "remote", "config.yml")
+	require.NoError(t, os.Chmod(source, 0o640))
+	remoteDir := filepath.Join(base, "remote")
+	target := filepath.Join(remoteDir, "config.yml")
 
 	d := &DeployOps{}
 	require.NoError(t, d.DeployRemoteFile(context.Background(), source, "user@testhost", target))
@@ -295,6 +275,13 @@ func TestDeployRemoteFile_EndToEnd(t *testing.T) {
 	got, err := os.ReadFile(target)
 	require.NoError(t, err)
 	assert.Equal(t, "v1", string(got))
+	info, err := os.Stat(target)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm(), "the deployed file keeps the source mode")
+	entries, err := os.ReadDir(remoteDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "a successful deploy leaves no staging directory behind")
+	assertSCPNeverInvoked(t, callLog)
 }
 
 func TestCheckSSHConnectivity_EndToEnd(t *testing.T) {
@@ -304,9 +291,10 @@ func TestCheckSSHConnectivity_EndToEnd(t *testing.T) {
 	require.NoError(t, d.CheckSSHConnectivity(context.Background(), "user@testhost"))
 }
 
-// assertNoTempRemnant asserts dir holds no `.tmp.` staging file — proof the
-// on-failure `ssh rm -f <tmp>` cleanup actually ran. Deleting the cleanup call
-// leaves the partial file behind and fails this assertion.
+// assertNoTempRemnant asserts dir holds no single-file staging entry: neither
+// a private `.deploy-tmp-` directory nor a legacy `.tmp.` file. It is proof
+// that the on-failure `ssh rm -rf <stage>` cleanup ran; deleting that call
+// leaves the staging directory behind and fails this assertion.
 func assertNoTempRemnant(t *testing.T, dir string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -315,108 +303,56 @@ func assertNoTempRemnant(t *testing.T, dir string) {
 	}
 	require.NoError(t, err)
 	for _, e := range entries {
+		assert.NotContains(t, e.Name(), ".deploy-tmp-", "staging directory must be cleaned up, found: %s", e.Name())
 		assert.NotContains(t, e.Name(), ".tmp.", "staging temp file must be cleaned up, found: %s", e.Name())
 	}
 }
 
-// TestDeployRemoteFile_ScpFailureCleansTemp drives the scp-failure branch: the
-// scp shim writes a PARTIAL destination file then fails, so the on-failure
-// `ssh rm -f <tmp>` must remove it. Asserting no `.tmp.` remnant survives makes
-// the test fail if that cleanup call is deleted.
-func TestDeployRemoteFile_ScpFailureCleansTemp(t *testing.T) {
-	setupSSHShim(t) // mkdir + cleanup rm succeed
-	dir := t.TempDir()
-	// Skip leading options, then write a partial file at the destination
-	// (`host:tmp` -> tmp) before failing, mimicking a truncated scp transfer.
-	shim := "#!/bin/sh\n" +
-		"while [ $# -gt 0 ]; do\n" +
-		"  case \"$1\" in\n" +
-		"    -o) shift 2 ;;\n" +
-		"    -*) shift ;;\n" +
-		"    *) break ;;\n" +
-		"  esac\n" +
-		"done\n" +
-		"dst=\"${2#*:}\"\n" +
-		"echo partial > \"$dst\"\n" +
-		"exit 1\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "scp"), []byte(shim), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	base := t.TempDir()
-	source := filepath.Join(base, "config.yml")
-	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
-	targetDir := filepath.Join(base, "remote")
-	target := filepath.Join(targetDir, "config.yml")
-
-	d := &DeployOps{}
-	err := d.DeployRemoteFile(context.Background(), source, "user@testhost", target)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "scp failed")
-	assertNoTempRemnant(t, targetDir)
-}
-
-// TestDeployRemoteFile_MoveFailureCleansTemp drives the atomic-move failure
-// branch: scp lands the temp file, but the remote `mv` fails, so the post-move
-// `ssh rm -f <tmp>` must remove the now-orphaned temp file. Asserting no `.tmp.`
-// remnant survives makes the test fail if that cleanup call is deleted.
-func TestDeployRemoteFile_MoveFailureCleansTemp(t *testing.T) {
-	setupSCPShim(t) // scp copies successfully -> leaves the temp file behind
-	// ssh shim that fails only when the remote command is `mv ...`.
-	dir := t.TempDir()
-	shim := "#!/bin/sh\n" +
-		"while [ $# -gt 0 ]; do\n" +
-		"  case \"$1\" in\n" +
-		"    -o) shift 2 ;;\n" +
-		"    -*) shift ;;\n" +
-		"    *) break ;;\n" +
-		"  esac\n" +
-		"done\n" +
-		"shift\n" +
-		"case \"$*\" in\n" +
-		"  mv*) exit 1 ;;\n" +
-		"esac\n" +
-		"exec /bin/sh -c \"$*\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	base := t.TempDir()
-	source := filepath.Join(base, "config.yml")
-	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
-	targetDir := filepath.Join(base, "remote")
-	target := filepath.Join(targetDir, "config.yml")
-
-	d := &DeployOps{}
-	err := d.DeployRemoteFile(context.Background(), source, "user@testhost", target)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "atomic move failed")
-	assertNoTempRemnant(t, targetDir)
-}
-
-func TestDeployRemoteFile_CancelledContextCleansTemp(t *testing.T) {
+// TestDeployRemoteFile_StreamFailureCleansStaging drives the stream-failure
+// branch: the remote command writes a partial file into the private staging
+// directory and fails, so the on-failure cleanup must remove the directory.
+func TestDeployRemoteFile_StreamFailureCleansStaging(t *testing.T) {
 	setupSSHShim(t)
-	dir := t.TempDir()
-	scpStarted := filepath.Join(dir, "scp-started")
-	t.Setenv("SCP_STARTED", scpStarted)
-	shim := "#!/bin/sh\n" +
-		"while [ $# -gt 0 ]; do\n" +
-		"  case \"$1\" in\n" +
-		"    -o) shift 2 ;;\n" +
-		"    -*) shift ;;\n" +
-		"    *) break ;;\n" +
-		"  esac\n" +
-		"done\n" +
-		"dst=\"${2#*:}\"\n" +
-		"echo partial > \"$dst\"\n" +
-		": > \"$SCP_STARTED\"\n" +
-		"exec /bin/sleep 30\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "scp"), []byte(shim), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	setupSCPTripwire(t)
+	seam := installStreamSeam(t, `echo x >> "$SEAM_COUNTER"; partial=$(printf '%s' "$STREAM_CMD" | sed -e 's/cat > /printf partial > /' -e 's/; actual=.*/; exit 1/'); exec /bin/sh -c "$partial"`)
+	source, remoteDir, target := fileDeployFixture(t, "v1")
 
-	base := t.TempDir()
-	source := filepath.Join(base, "config.yml")
-	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
-	targetDir := filepath.Join(base, "remote")
-	target := filepath.Join(targetDir, "config.yml")
+	err := (&DeployOps{}).DeployRemoteFile(context.Background(), source, "user@testhost", target)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ssh file stream")
+	assert.Equal(t, 1, countAttempts(t, seam.counter), "a remote command failure is not retried")
+	assert.Equal(t, "old", readMarker(t, remoteDir, "config.yml"))
+	assertNoTempRemnant(t, remoteDir)
+}
+
+// TestDeployRemoteFile_MoveFailureCleansStaging drives a failure after the
+// verified file is staged: a failing `mv` on the remote PATH leaves the staged
+// file in place, so cleanup must remove the staging directory.
+func TestDeployRemoteFile_MoveFailureCleansStaging(t *testing.T) {
+	setupSSHShim(t)
+	setupSCPTripwire(t)
+	fakeBin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "mv"), []byte("#!/bin/sh\necho 'mv: cannot move' >&2\nexit 1\n"), 0o755))
+	seam := installStreamSeam(t, `echo x >> "$SEAM_COUNTER"; PATH="$FAKE_BIN:$PATH" exec /bin/sh -c "$STREAM_CMD"`, "FAKE_BIN="+fakeBin)
+	source, remoteDir, target := fileDeployFixture(t, "v1")
+
+	err := (&DeployOps{}).DeployRemoteFile(context.Background(), source, "user@testhost", target)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ssh file stream")
+	assert.Contains(t, err.Error(), "mv: cannot move")
+	assert.Equal(t, 1, countAttempts(t, seam.counter))
+	assert.Equal(t, "old", readMarker(t, remoteDir, "config.yml"))
+	assertNoTempRemnant(t, remoteDir)
+}
+
+func TestDeployRemoteFile_CancelledContextCleansStaging(t *testing.T) {
+	setupSSHShim(t)
+	setupSCPTripwire(t)
+	started := filepath.Join(t.TempDir(), "stream-started")
+	installStreamSeam(t, `: > "$STREAM_STARTED"; exec /bin/sleep 30`, "STREAM_STARTED="+started)
+	source, remoteDir, target := fileDeployFixture(t, "v1")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -426,7 +362,7 @@ func TestDeployRemoteFile_CancelledContextCleansTemp(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		_, err := os.Stat(scpStarted)
+		_, err := os.Stat(started)
 		return err == nil
 	}, 5*time.Second, 10*time.Millisecond)
 	cancel()
@@ -437,5 +373,6 @@ func TestDeployRemoteFile_CancelledContextCleansTemp(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("DeployRemoteFile did not return after cancellation")
 	}
-	assertNoTempRemnant(t, targetDir)
+	assert.Equal(t, "old", readMarker(t, remoteDir, "config.yml"))
+	assertNoTempRemnant(t, remoteDir)
 }

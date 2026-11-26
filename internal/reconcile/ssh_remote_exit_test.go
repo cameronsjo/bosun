@@ -151,40 +151,38 @@ func TestDeployRemote_ExtractFailureClassification(t *testing.T) {
 	}
 }
 
-// OpenSSH 9+ scp prints "scp: Connection closed" after a refused host key or a
-// failed login. The transport phrase must not make either failure retryable,
-// and a refused host key must still carry the operator guidance.
-func TestDeployRemoteFile_SCPHostKeyAndAuthFailuresAreNotRetried(t *testing.T) {
+// A refused host key or a failed login on the single-file stream leg exits
+// 255 and may be followed by a transport phrase. Neither failure is
+// retryable, and a refused host key must still carry the operator guidance.
+func TestDeployRemoteFile_StreamHostKeyAndAuthFailuresAreNotRetried(t *testing.T) {
 	tests := []struct {
 		name         string
 		stderr       string
 		wantGuidance bool
 	}{
-		{"refused host key", "Host key verification failed.\nscp: Connection closed", true},
-		{"failed key login", "user@testhost: Permission denied (publickey).\nscp: Connection closed", false},
+		{"refused host key", "Host key verification failed.\nConnection closed by 192.0.2.10 port 22", true},
+		{"failed key login", "user@testhost: Permission denied (publickey).\nConnection closed by 192.0.2.10 port 22", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setupSSHShim(t)
-			counter := filepath.Join(t.TempDir(), "attempts")
-			dir := t.TempDir()
-			shim := "#!/bin/sh\necho x >> \"$SCP_COUNTER\"\nprintf '%s\\n' \"$SCP_MSG\" >&2\nexit 1\n"
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "scp"), []byte(shim), 0o755))
-			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			t.Setenv("SCP_COUNTER", counter)
-			t.Setenv("SCP_MSG", tt.stderr)
+			callLog := setupSCPTripwire(t)
+			seam := installStreamSeam(t, `echo x >> "$SEAM_COUNTER"; printf '%s\n' "$SEAM_MSG" >&2; exit 255`, "SEAM_MSG="+tt.stderr)
 
 			base := t.TempDir()
 			source := filepath.Join(base, "config.yml")
 			require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
-			target := filepath.Join(base, "remote", "config.yml")
+			remoteDir := filepath.Join(base, "remote")
+			target := filepath.Join(remoteDir, "config.yml")
 
 			err := (&DeployOps{}).DeployRemoteFile(context.Background(), source, "user@testhost", target)
 
 			require.Error(t, err)
-			assert.Equal(t, 1, countAttempts(t, counter), "a host-key or auth failure must fail on the first attempt")
+			assert.Equal(t, 1, countAttempts(t, seam.counter), "a host-key or auth failure must fail on the first attempt")
 			assert.Equal(t, tt.wantGuidance, strings.Contains(err.Error(), hostKeyGuidanceMarker), "host-key guidance")
 			assert.NoFileExists(t, target)
+			assertNoTempRemnant(t, remoteDir)
+			assertSCPNeverInvoked(t, callLog)
 		})
 	}
 }
