@@ -207,6 +207,13 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the underlying writer to http.NewResponseController. Without
+// it the controller sees only this wrapper and reports ErrNotSupported, so a
+// handler could not extend its write deadline through the logging middleware.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // handleHealth handles the health check endpoint.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)

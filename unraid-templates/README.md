@@ -103,7 +103,7 @@ For deployment notifications:
 | `SOPS_AGE_KEY_FILE` | Yes | Path to Age private key |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Webhook signing secret. Bosun reads `WEBHOOK_SECRET` first; set only one of the two, because two different values make every webhook trigger fail with `403`. The literal `change-me` counts as unset |
 | `DISCORD_WEBHOOK_URL` | No | Discord notification webhook |
-| `BOSUN_POLL_INTERVAL` | No | Seconds between polls (default: 3600) |
+| `BOSUN_POLL_INTERVAL` | No | Seconds or a Go duration between polls (default: 3600; `0` disables polling) |
 | `TZ` | No | Timezone (default: America/Chicago) |
 
 Private HTTPS authentication uses HTTP Basic auth only for the configured HTTPS

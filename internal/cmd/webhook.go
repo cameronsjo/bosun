@@ -167,6 +167,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
 	<-sigCh
 
 	ui.Info("Shutting down...")

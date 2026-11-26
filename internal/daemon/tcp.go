@@ -15,6 +15,12 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+// tcpWriteTimeout is the TCP server's response write deadline. It starts when
+// the request headers are read, so handler time counts against it. The API
+// routes that run under BOSUN_API_TIMEOUT extend their own deadline past it
+// (extendAPIWriteDeadline); every other route keeps this value.
+const tcpWriteTimeout = 30 * time.Second
+
 // TCPServer handles TCP connections with bearer token authentication.
 // This allows remote access to the daemon API for trusted clients.
 type TCPServer struct {
@@ -47,7 +53,7 @@ func NewTCPServer(d *Daemon, addr, bearerToken string) (*TCPServer, error) {
 		Handler:           s.authMiddleware(s.auditMiddleware(mux)),
 		ReadHeaderTimeout: daemonReadHeaderTimeout,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      tcpWriteTimeout,
 		MaxHeaderBytes:    daemonMaxHeaderBytes,
 	}
 
