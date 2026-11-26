@@ -40,6 +40,13 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.49.9](https://github.com/cameronsjo/bosun/compare/v0.49.8...v0.49.9) (2026-11-26)
+
+
+### Bug Fixes
+
+* **upgrade:** keep dynamic config, replace flags, and fail with a non-zero exit ([#883](https://github.com/cameronsjo/bosun/issues/883)) ([83ce6a3](https://github.com/cameronsjo/bosun/commit/83ce6a333325a745c6e0570d1415e033b27ea319))
+
 ## [0.49.8](https://github.com/cameronsjo/bosun/compare/v0.49.7...v0.49.8) (2026-11-26)
 
 
