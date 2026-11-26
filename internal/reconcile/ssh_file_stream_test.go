@@ -2,10 +2,13 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -405,4 +408,88 @@ func TestDeployRemoteFile_CarriesHostKeyOptions(t *testing.T) {
 	assert.True(t, sawStage, "the staging mkdir leg must run over ssh")
 	assert.True(t, sawStream, "the file stream leg must run over ssh")
 	assertSCPNeverInvoked(t, callLog)
+}
+
+func TestTolerateRemoteModeFailure(t *testing.T) {
+	tests := []struct {
+		target string
+		want   bool
+	}{
+		{"/boot/config/plugins/compose.manager/projects/core/docker-compose.yml", true},
+		{"/boot/config//plugins/x.yml", true},
+		{"/boot/configx/a.yml", false},
+		{"/boot/config/../etc/a.yml", false},
+		{"/mnt/user/boot/config/a.yml", false},
+		{"/mnt/user/appdata/traefik/traefik.yml", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			assert.Equal(t, tt.want, tolerateRemoteModeFailure(tt.target))
+		})
+	}
+}
+
+// runStreamCommand runs a built single-file stream command in a local shell
+// with content on stdin and fakeBin ahead of PATH. It returns stderr and the
+// exit error.
+func runStreamCommand(t *testing.T, remoteCmd, content, fakeBin string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", remoteCmd)
+	cmd.Stdin = strings.NewReader(content)
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
+}
+
+// The Compose Manager mirror lives on FAT, which cannot store permission
+// bits. Only there is a failed chmod tolerated and reported; anywhere else it
+// fails the attempt before the move.
+func TestBuildRemoteFileStreamCommand_ModeFailureTolerance(t *testing.T) {
+	for _, tolerate := range []bool{true, false} {
+		t.Run("tolerate="+strconv.FormatBool(tolerate), func(t *testing.T) {
+			setupSha256sumShim(t)
+			fakeBin := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "chmod"), []byte("#!/bin/sh\necho 'chmod: Operation not permitted' >&2\nexit 1\n"), 0o755))
+			remoteDir := t.TempDir()
+			writeMarker(t, remoteDir, "docker-compose.yml", "old")
+			stageDir := filepath.Join(remoteDir, ".deploy-tmp-x")
+			require.NoError(t, os.Mkdir(stageDir, 0o700))
+			target := filepath.Join(remoteDir, "docker-compose.yml")
+			content := "services: {}\n"
+			sum := sha256.Sum256([]byte(content))
+
+			stderr, err := runStreamCommand(t, buildRemoteFileStreamCommand(stageDir, filepath.Join(stageDir, "file"), target, hex.EncodeToString(sum[:]), 0o644, tolerate), content, fakeBin)
+
+			if tolerate {
+				require.NoError(t, err, stderr)
+				assert.Contains(t, stderr, remoteModeUnsupportedMarker)
+				assert.Equal(t, content, readMarker(t, remoteDir, "docker-compose.yml"))
+				assert.NoDirExists(t, stageDir, "a successful stream removes its staging directory")
+				return
+			}
+			require.Error(t, err)
+			assert.NotContains(t, stderr, remoteModeUnsupportedMarker)
+			assert.Equal(t, "old", readMarker(t, remoteDir, "docker-compose.yml"), "a failed chmod must stop the move")
+		})
+	}
+}
+
+// The command checks the received bytes against the expected hash: a
+// mismatch exits 79 and leaves the target alone.
+func TestBuildRemoteFileStreamCommand_ChecksumMismatchExits79(t *testing.T) {
+	setupSha256sumShim(t)
+	remoteDir := t.TempDir()
+	writeMarker(t, remoteDir, "config.yml", "old")
+	stageDir := filepath.Join(remoteDir, ".deploy-tmp-x")
+	require.NoError(t, os.Mkdir(stageDir, 0o700))
+	sum := sha256.Sum256([]byte("expected"))
+
+	_, err := runStreamCommand(t, buildRemoteFileStreamCommand(stageDir, filepath.Join(stageDir, "file"), filepath.Join(remoteDir, "config.yml"), hex.EncodeToString(sum[:]), 0o644, false), "different", t.TempDir())
+
+	var exitErr *exec.ExitError
+	require.True(t, errors.As(err, &exitErr), "expected an exit error, got %v", err)
+	assert.Equal(t, remoteTransferChecksumMismatchExit, exitErr.ExitCode())
+	assert.Equal(t, "old", readMarker(t, remoteDir, "config.yml"))
 }

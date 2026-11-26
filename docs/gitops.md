@@ -501,7 +501,7 @@ Both SSH channels resolve configured trust files in this order:
 2. `/config/known_hosts` (container convention)
 
 Git fails closed before network access when neither candidate exists or the
-selected file is malformed. Remote `ssh` and `scp` operations use
+selected file is malformed. Remote `ssh` operations use
 `StrictHostKeyChecking=yes` with the selected file; when no configured file
 exists, they leave OpenSSH's normal trust stores available but refuse an
 unpinned host. Bosun never uses `accept-new` as an implicit trust decision.
@@ -808,7 +808,7 @@ aside restores that original target and removes the unpublished temp tree.
 
 ### Remote Deployment
 
-Uses tar-over-SSH for efficient file transfer:
+Uses tar-over-SSH for directories and an SSH stream for individual files:
 
 ```
 Staging                    Target
@@ -818,6 +818,8 @@ staging/unraid/appdata/ -> root@host:/mnt/user/appdata/
 The remote deployment creates a tar archive locally, streams it over SSH, and extracts it into a temp directory on the remote host. This avoids requiring rsync on the remote system.
 
 The staged tree is then promoted with a **retain-old rename-swap**: the live target directory is moved aside to `<target>.bosun-old.<timestamp>` (never deleted first), the new tree is moved into place, and the retained copy is removed only after the swap succeeds. If the move-in fails, the swap restores the retained copy. An interrupted deploy therefore always retains at least one complete tree — the old or the new. A crash between the move-aside and the move-in can leave the target *path* temporarily absent (the old tree stays intact at its `.bosun-old.<timestamp>` sibling) until the next deploy self-heals it by promoting the newest retained copy; orphaned copies are cleaned up at the same time. On Unraid's `/mnt/user` FUSE mount the swap is safe (retain-old) rather than kernel-atomic, and a settle delay follows the move so writes propagate before `docker compose up` reads them.
+
+Individual files (for example `appdata/authelia/configuration.yml`) are streamed over SSH; `scp` is not used. Each attempt creates a private `.deploy-tmp-<random>` directory beside the target with an exclusive `mkdir` under umask 077, streams the file into it, checks its SHA-256 against the local file, sets the source file's permission bits masked by the remote umask, and moves it over the target. A truncated transfer fails the hash check and leaves the existing file untouched. Every remote path reaches the remote shell as one quoted word. Cleanup removes only a staging directory the same attempt created, so an entry already at that name fails the attempt and is never written through or deleted. The remote host needs POSIX `sh`, `cat`, `chmod`, `mv`, `mkdir`, `rmdir`, and `sha256sum`. The optional Compose Manager mirror under `/boot/config` is on the FAT-formatted Unraid flash, which cannot store permission bits; a failed mode change there is logged and tolerated.
 
 ### Deployed Paths
 
@@ -863,7 +865,7 @@ SSH and file sync operations retry on transient errors with exponential backoff:
 - Temporary failure
 - Broken pipe, connection closed, closed by remote host, server not responding
 
-**Not retried**: a failure reported by the remote command itself (any exit status other than SSH's own 255, for example a full disk or a permission error) fails on the first attempt, because re-sending the payload cannot fix it. A refused host key or a failed login also fails on the first attempt, even when ssh or scp follows it with a transport message such as `Connection closed`; a refused host key comes back with guidance on pinning the key. A connection that the server closes before authentication (for example a TCP-wrapper or `MaxStartups` refusal) is treated as transient and retried, so such a permanent server-side refusal costs the full retry budget before it fails. Two transfer failures are the exception and are retried with a fresh staging directory: a checksum mismatch on the received payload, and a transfer whose ssh client ended without an exit status. A deploy target with no parent directory (`/`, `.`, an empty path, or `..`) is rejected before any SSH command runs; a trailing slash on the target is ignored.
+**Not retried**: a failure reported by the remote command itself (any exit status other than SSH's own 255, for example a full disk or a permission error) fails on the first attempt, because re-sending the payload cannot fix it. A refused host key or a failed login also fails on the first attempt, even when ssh follows it with a transport message such as `Connection closed`; a refused host key comes back with guidance on pinning the key. A connection that the server closes before authentication (for example a TCP-wrapper or `MaxStartups` refusal) is treated as transient and retried, so such a permanent server-side refusal costs the full retry budget before it fails. Two transfer failures are the exception and are retried with a fresh staging directory: a checksum mismatch on the received payload, and a transfer whose ssh client ended without an exit status. A deploy target with no parent directory (`/`, `.`, an empty path, or `..`) is rejected before any SSH command runs; a trailing slash on the target is ignored.
 
 ## Locking
 
