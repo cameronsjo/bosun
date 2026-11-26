@@ -46,7 +46,8 @@ func apiWriteDeadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
 func extendAPIWriteDeadline(w http.ResponseWriter, apiTimeout time.Duration, factor int64) {
 	deadline := time.Now().Add(apiWriteDeadlineFor(apiTimeout, factor))
 	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil {
-		log.Component(log.ComponentHTTP).Debug().
+		logger := log.Component(log.ComponentHTTP)
+		logger.Debug().
 			Err(err).
 			Msg("Could not extend the response write deadline; the server default stands")
 	}
