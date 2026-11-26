@@ -155,7 +155,7 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 			return fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
 		}
 	}
-	if entries < 0 {
+	if entries == 0 {
 		return errBackupNoEntries
 	}
 	return nil
