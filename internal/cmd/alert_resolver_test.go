@@ -97,7 +97,9 @@ func TestBuildAlertManagerRaw_RecipientSources(t *testing.T) {
 			wantProvider: "twilio",
 		},
 		{
-			name:      "environment recipients replace the file's",
+			// Control: the provider is configured with either list. Which list wins
+			// is pinned in TestAlertConfig_RecipientEnvPrecedence.
+			name:      "environment recipients alongside the file's still configure the provider",
 			bosunYAML: sendgridFile,
 			env: map[string]string{
 				"SENDGRID_TO_EMAILS": "legacy@example.com",

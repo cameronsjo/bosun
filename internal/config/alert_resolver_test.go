@@ -174,8 +174,9 @@ func TestAlertConfig_WebhookHeadersPairWithURL(t *testing.T) {
 			wantHeaders: nil,
 		},
 		{
-			// A guard for the new parse branch: headers are nil before the fix
-			// as well, because nothing parsed them.
+			// Covers the malformed-JSON branch. It also fails before the fix:
+			// there the file's X-Source header carried over to the environment
+			// URL, so the headers are not nil.
 			name: "env URL with malformed env headers ends up with no headers",
 			env: map[string]string{
 				"BOSUN_WEBHOOK_URL":     "https://env.example.com/hook",

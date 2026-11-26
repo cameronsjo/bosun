@@ -452,7 +452,7 @@ do not gain legacy aliases.
 | `BOSUN_TWILIO_TO_NUMBERS` | config | Comma-separated Twilio recipients (overrides `twilio_to_numbers`; legacy: `TWILIO_TO_NUMBERS`). Blank or separators-only counts as unset |
 | `BOSUN_SLACK_WEBHOOK_URL` | config | Slack webhook URL (overrides config file; legacy: `SLACK_WEBHOOK_URL`) |
 | `BOSUN_WEBHOOK_URL` | config | Generic alert webhook URL (overrides `webhook_url`). When set, the URL and `BOSUN_WEBHOOK_HEADERS` replace both `webhook_url` and `webhook_headers` from the config file |
-| `BOSUN_WEBHOOK_HEADERS` | config | JSON object of headers for the alert webhook, e.g. `{"Authorization":"Bearer ..."}`. Used only together with `BOSUN_WEBHOOK_URL`; ignored when the URL comes from the config file. Malformed JSON is ignored with a warning |
+| `BOSUN_WEBHOOK_HEADERS` | config | JSON object of headers for the alert webhook, e.g. `{"Authorization":"Bearer ..."}`. Used only together with `BOSUN_WEBHOOK_URL`; ignored, with a warning that names the variable and not its value, when the URL comes from the config file. Malformed JSON is ignored with a warning |
 | `BOSUN_WEBHOOK_METHOD` | config | HTTP method for the alert webhook (overrides `webhook_method`) |
 | `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |

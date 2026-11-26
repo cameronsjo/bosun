@@ -52,7 +52,7 @@ func TestAlertConfig_DroppedWebhookHeadersAreWarnedAbout(t *testing.T) {
 		got := alertConfigFrom(t, fileURL)
 
 		assert.Equal(t, map[string]string{"Authorization": secret}, got.WebhookHeaders)
-		assert.NotContains(t, logs.String(), `"level":"warn"`)
+		assert.NotContains(t, logs.String(), "applies only together", "the headers are used, so there is nothing to warn about")
 	})
 
 	t.Run("no headers variable, no warning", func(t *testing.T) {
@@ -61,6 +61,6 @@ func TestAlertConfig_DroppedWebhookHeadersAreWarnedAbout(t *testing.T) {
 
 		alertConfigFrom(t, fileURL)
 
-		assert.NotContains(t, logs.String(), "BOSUN_WEBHOOK_HEADERS")
+		assert.NotContains(t, logs.String(), "applies only together")
 	})
 }

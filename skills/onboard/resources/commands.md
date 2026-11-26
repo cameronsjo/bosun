@@ -614,6 +614,8 @@ bosun alert test -s error              # Set severity (info/warning/error)
 | `-m`, `--message` | Custom test message |
 | `-s`, `--severity` | Alert severity (info, warning, error) |
 
+Without a project config it falls back to the environment alone, resolved like `bosun alert status`: `BOSUN_` variables first, then the legacy ones, including the sender and recipient settings a SendGrid or Twilio test needs.
+
 ---
 
 ## Backup & Restore

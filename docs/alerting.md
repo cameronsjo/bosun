@@ -158,7 +158,7 @@ ordinary counted failures.
 
 ## Which Source Wins
 
-Every alert setting resolves the same way, in the daemon, in `bosun reconcile`, and in `bosun alert status` and `bosun alert test`:
+Every alert setting resolves the same way, in the daemon, in `bosun reconcile`, and in `bosun alert status` and `bosun alert test`. The order below applies to each setting that has both names; the webhook URL, method and headers have only a `BOSUN_` name and are described after the list:
 
 1. the `BOSUN_` environment variable (for example `BOSUN_SENDGRID_API_KEY`)
 2. the legacy unprefixed variable (`SENDGRID_API_KEY`)
@@ -170,6 +170,8 @@ Credentials, senders and recipients each resolve on their own. A credential from
 Recipient variables (`SENDGRID_TO_EMAILS`, `TWILIO_TO_NUMBERS` and their `BOSUN_` forms) hold a comma-separated list. A value with no address in it, blank or only commas, counts as unset and falls through to the next source, so it cannot be used to clear the recipients in `bosun.yaml`.
 
 Webhook headers resolve together with the webhook URL. `BOSUN_WEBHOOK_URL` with `BOSUN_WEBHOOK_HEADERS` (a JSON object, for example `{"Authorization":"Bearer ..."}`) replaces both the URL and the headers from `bosun.yaml`. Without `BOSUN_WEBHOOK_URL`, the URL and headers come from `bosun.yaml` and `BOSUN_WEBHOOK_HEADERS` is ignored, so a header from the environment never goes to a URL it was not set for.
+
+**Upgrade note:** an environment-only `BOSUN_WEBHOOK_HEADERS` used with a webhook URL from `bosun.yaml` is no longer sent. Before this resolver the variable applied to a file URL too. Bosun logs a warning at start naming `BOSUN_WEBHOOK_HEADERS` (never its value) when it drops the headers. To keep sending them, set `BOSUN_WEBHOOK_URL` as well, or move the headers into `webhook_headers` in `bosun.yaml`.
 
 Without a project config (no `bosun.yaml` found), `bosun alert status` and `bosun alert test` resolve from the environment alone, with the same names and the same defaults for `on_failure` and `on_recovery` (true).
 

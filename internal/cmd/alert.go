@@ -94,7 +94,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("Discord: not configured")
-		fmt.Println("  Set DISCORD_WEBHOOK_URL or add discord_webhook_url to bosun.yaml")
+		fmt.Println("  Set BOSUN_DISCORD_WEBHOOK_URL (or DISCORD_WEBHOOK_URL) or add discord_webhook_url to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -105,7 +105,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("Slack: not configured")
-		fmt.Println("  Set SLACK_WEBHOOK_URL or add slack_webhook_url to bosun.yaml")
+		fmt.Println("  Set BOSUN_SLACK_WEBHOOK_URL (or SLACK_WEBHOOK_URL) or add slack_webhook_url to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -126,7 +126,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("SendGrid: not configured")
-		fmt.Println("  Set SENDGRID_API_KEY or add sendgrid_api_key to bosun.yaml")
+		fmt.Println("  Set BOSUN_SENDGRID_API_KEY (or SENDGRID_API_KEY) or add sendgrid_api_key to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -143,7 +143,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("Twilio: not configured")
-		fmt.Println("  Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN or add to bosun.yaml")
+		fmt.Println("  Set BOSUN_TWILIO_ACCOUNT_SID and BOSUN_TWILIO_AUTH_TOKEN (or the unprefixed names) or add them to bosun.yaml")
 	}
 	fmt.Println()
 

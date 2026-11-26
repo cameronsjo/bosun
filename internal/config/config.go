@@ -1261,10 +1261,7 @@ func cloneTargets(targets []reconcile.Target) []reconcile.Target {
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,
 // otherwise returns the provided default value.
 func getEnvOrDefault(envKey, defaultValue string) string {
-	if v := os.Getenv(envKey); v != "" {
-		return v
-	}
-	return defaultValue
+	return envOrDefault(os.Getenv, envKey, defaultValue)
 }
 
 // splitCommaSeparated splits a comma-separated env-var value into a trimmed,
@@ -1411,7 +1408,11 @@ func extractAlertConfigWith(cfg configFile, getenv envLookup) AlertConfig {
 			}
 		}
 	} else if getenv("BOSUN_WEBHOOK_HEADERS") != "" {
-		log.Debug().Msg("Ignoring BOSUN_WEBHOOK_HEADERS: it applies only together with BOSUN_WEBHOOK_URL")
+		// Warn, not Debug: before this resolver the variable applied to a webhook
+		// URL from bosun.yaml too, so an operator who relied on that gets a
+		// receiver that rejects the request and nothing else to explain why. The
+		// message names the variables, never the header value.
+		log.Warn().Msg("Ignoring BOSUN_WEBHOOK_HEADERS: it applies only together with BOSUN_WEBHOOK_URL, and the webhook URL comes from bosun.yaml")
 	}
 	alertCfg.WebhookMethod = envOrDefault(getenv, "BOSUN_WEBHOOK_METHOD", alertCfg.WebhookMethod)
 
