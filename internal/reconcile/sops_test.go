@@ -793,6 +793,107 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	})
 }
 
+// TestSOPSOps_CheckAgeKeyInlineValue pins how CheckAgeKey judges the content
+// of SOPS_AGE_KEY. The rules mirror the SOPS age key source: raw lines that are
+// empty or start with "#" are skipped, every other line is split on
+// whitespace, and every word must parse as exactly one identity. A value that
+// yields no identity and no parse error is treated as unset, so the file
+// sources are still consulted, as SOPS does. The value itself must never
+// appear in the returned error or in any log line.
+func TestSOPSOps_CheckAgeKeyInlineValue(t *testing.T) {
+	const (
+		firstIdentity  = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU"
+		secondIdentity = "AGE-SECRET-KEY-1G0Q5K9TV4REQ3ZSQRMTMG8NSWQGYT0T7TZ33RAZEE0GZYVZN0APSU24RK7"
+		// firstIdentity with its final character changed, so the bech32
+		// checksum fails.
+		badChecksumIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VQ"
+		inlineSentinel      = "not-a-key-SENTINEL-7f3a"
+		armorBodySentinel   = "ARMORBODYSENTINEL"
+		binaryBodySentinel  = "BINARYBODYSENTINEL"
+		inlineErrorText     = "SOPS_AGE_KEY does not contain a parseable Age identity"
+	)
+
+	tests := []struct {
+		name             string
+		value            string
+		withValidKeyFile bool
+		wantErr          bool
+		wantInlineError  bool
+		wantLog          string
+		mustNotEcho      []string
+	}{
+		{name: "single valid key", value: firstIdentity, mustNotEcho: []string{firstIdentity}},
+		{name: "two keys separated by a space on one line", value: firstIdentity + " " + secondIdentity, mustNotEcho: []string{firstIdentity, secondIdentity}},
+		{name: "comment line then key", value: "# note\n" + firstIdentity, mustNotEcho: []string{firstIdentity}},
+		{name: "key followed by a hash word on the same line", value: firstIdentity + " #c", wantErr: true, wantInlineError: true, mustNotEcho: []string{firstIdentity}},
+		{name: "unknown identity type", value: inlineSentinel, wantErr: true, wantInlineError: true, mustNotEcho: []string{inlineSentinel}},
+		{name: "bad checksum", value: badChecksumIdentity, wantErr: true, wantInlineError: true, mustNotEcho: []string{badChecksumIdentity}},
+		{
+			name:            "leading space before armored header",
+			value:           " -----BEGIN AGE ENCRYPTED FILE-----\n" + armorBodySentinel + "\n-----END AGE ENCRYPTED FILE-----",
+			wantErr:         true,
+			wantInlineError: true,
+			mustNotEcho:     []string{armorBodySentinel},
+		},
+		{
+			name:        "armored encrypted key is accepted with a warning",
+			value:       "-----BEGIN AGE ENCRYPTED FILE-----\n" + armorBodySentinel + "\n-----END AGE ENCRYPTED FILE-----\n",
+			wantLog:     `"key_format":"armored"`,
+			mustNotEcho: []string{armorBodySentinel},
+		},
+		{
+			name:        "binary encrypted key is accepted with a warning",
+			value:       "age-encryption.org/v1\n-> X25519 " + binaryBodySentinel + "\n",
+			wantLog:     `"key_format":"age-encryption"`,
+			mustNotEcho: []string{binaryBodySentinel},
+		},
+		{name: "whitespace only falls through to a valid key file", value: "   ", withValidKeyFile: true},
+		{name: "whitespace only with no other source", value: "   ", wantErr: true},
+		{name: "comment only falls through to a valid key file", value: "# note", withValidKeyFile: true},
+		{name: "comment lines only with no other source", value: "\n#x\n", wantErr: true},
+		{name: "invalid value next to a valid key file", value: inlineSentinel, withValidKeyFile: true, wantErr: true, wantInlineError: true, mustNotEcho: []string{inlineSentinel}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("SOPS_AGE_KEY_FILE", "")
+			if tt.withValidKeyFile {
+				keyFile := filepath.Join(t.TempDir(), "key.txt")
+				require.NoError(t, os.WriteFile(keyFile, []byte(secondIdentity+"\n"), 0o600))
+				t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+			}
+			t.Setenv("SOPS_AGE_KEY", tt.value)
+
+			var err error
+			logs := captureSOPSDebugLogs(t, func() {
+				err = NewSOPSOps().CheckAgeKey()
+			})
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+				if tt.wantInlineError {
+					assert.Contains(t, err.Error(), inlineErrorText, "the error must name SOPS_AGE_KEY as the failing source")
+				} else {
+					assert.NotContains(t, err.Error(), inlineErrorText, "an empty inline value must fall through, not fail as SOPS_AGE_KEY")
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.wantLog != "" {
+				assert.Contains(t, logs, tt.wantLog)
+			}
+			for _, secret := range tt.mustNotEcho {
+				if err != nil {
+					assert.NotContains(t, err.Error(), secret, "the error must not echo SOPS_AGE_KEY content")
+				}
+				assert.NotContains(t, logs, secret, "no log line may echo SOPS_AGE_KEY content")
+			}
+		})
+	}
+}
+
 func TestSOPSOps_CheckAgeKeyInjectedReaderErrors(t *testing.T) {
 	t.Setenv("SOPS_AGE_KEY", "")
 	t.Setenv("SOPS_AGE_KEY_FILE", "/config/age-key.txt")
