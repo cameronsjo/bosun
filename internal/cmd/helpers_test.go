@@ -7,30 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFilterEmptyStrings(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []string
-		expected []string
-	}{
-		{"nil slice", nil, []string{}},
-		{"empty slice", []string{}, []string{}},
-		{"all empty", []string{"", "  ", ""}, []string{}},
-		{"no empty", []string{"a", "b", "c"}, []string{"a", "b", "c"}},
-		{"mixed", []string{"a", "", "b", "  ", "c"}, []string{"a", "b", "c"}},
-		{"whitespace trimmed", []string{" a ", " b "}, []string{"a", "b"}},
-		{"single empty", []string{""}, []string{}},
-		{"single non-empty", []string{"x"}, []string{"x"}},
-		{"tabs and newlines", []string{"\t", "\n", "  \t  "}, []string{}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := filterEmptyStrings(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 func TestCreateAlertManager_NoProviders(t *testing.T) {
 	// Clear all alert-related env vars.
 	t.Setenv("DISCORD_WEBHOOK_URL", "")

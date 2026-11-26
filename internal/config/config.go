@@ -1261,10 +1261,7 @@ func cloneTargets(targets []reconcile.Target) []reconcile.Target {
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,
 // otherwise returns the provided default value.
 func getEnvOrDefault(envKey, defaultValue string) string {
-	if v := os.Getenv(envKey); v != "" {
-		return v
-	}
-	return defaultValue
+	return envOrDefault(os.Getenv, envKey, defaultValue)
 }
 
 // splitCommaSeparated splits a comma-separated env-var value into a trimmed,
@@ -1285,37 +1282,60 @@ func splitCommaSeparated(v string) []string {
 	return result
 }
 
-// AlertConfigFromEnv builds an AlertConfig purely from environment variables,
-// applying BOSUN_-first precedence without needing a project config file.
-// This is used as a fallback when config.Load() fails (no bosun.yaml present).
-func AlertConfigFromEnv() AlertConfig {
-	return AlertConfig{
-		DiscordWebhookURL: getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", "")),
-		SlackWebhookURL:   getEnvOrDefault("BOSUN_SLACK_WEBHOOK_URL", getEnvOrDefault("SLACK_WEBHOOK_URL", "")),
-		SendGridAPIKey:    getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", "")),
-		SendGridFromEmail: getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", "")),
-		SendGridFromName:  getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", "")),
-		// BOSUN_SENDGRID_TO_EMAILS is a comma-separated list of recipient addresses.
-		// Without this, a provider initialized via env vars would have credentials but no
-		// recipients, causing IsConfigured() == false and silent alert drops.
-		SendGridToEmails: splitCommaSeparated(os.Getenv("BOSUN_SENDGRID_TO_EMAILS")),
-		TwilioAccountSID: getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", "")),
-		TwilioAuthToken:  getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", "")),
-		TwilioFromNumber: getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", "")),
-		// BOSUN_TWILIO_TO_NUMBERS is a comma-separated list of recipient phone numbers.
-		TwilioToNumbers: splitCommaSeparated(os.Getenv("BOSUN_TWILIO_TO_NUMBERS")),
-		WebhookURL:      getEnvOrDefault("BOSUN_WEBHOOK_URL", ""),
-		WebhookMethod:   getEnvOrDefault("BOSUN_WEBHOOK_METHOD", ""),
-		// OnFailure defaults to true (same as extractAlertConfig).
-		OnFailure: true,
-		// OnRecovery defaults to true unconditionally -- it carries no coupling.
-		OnRecovery: true,
+// envLookup reads one environment variable. The alert resolver takes it as a
+// parameter so `bosun alert` can resolve from an injected environment.
+type envLookup func(string) string
+
+// envOrDefault returns the variable's value when it is set and non-empty,
+// otherwise the default.
+func envOrDefault(getenv envLookup, envKey, defaultValue string) string {
+	if v := getenv(envKey); v != "" {
+		return v
 	}
+	return defaultValue
+}
+
+// envRecipients returns the first of the named variables that holds at least
+// one address, or the fallback when none does. A value with no address in it
+// (blank, or only separators) counts as unset, so it falls through to the next
+// source instead of silently clearing the recipients below it.
+func envRecipients(getenv envLookup, fallback []string, envKeys ...string) []string {
+	for _, key := range envKeys {
+		if list := splitCommaSeparated(getenv(key)); len(list) > 0 {
+			return list
+		}
+	}
+	return fallback
+}
+
+// AlertConfigFromEnv builds an AlertConfig purely from environment variables,
+// applying the same BOSUN_-first precedence as the project-file resolver
+// without needing a project config file. It is the fallback when config.Load()
+// fails (no bosun.yaml present).
+func AlertConfigFromEnv() AlertConfig {
+	return AlertConfigFromLookup(os.Getenv)
+}
+
+// AlertConfigFromLookup is AlertConfigFromEnv over an injected environment.
+// There is one resolver for alert settings (extractAlertConfigWith); an
+// environment-only config is that resolver over an empty project file.
+func AlertConfigFromLookup(getenv func(string) string) AlertConfig {
+	return extractAlertConfigWith(configFile{}, getenv)
 }
 
 // extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
 func extractAlertConfig(cfg configFile) AlertConfig {
+	return extractAlertConfigWith(cfg, os.Getenv)
+}
+
+// extractAlertConfigWith is the one resolver for alert settings, used by the
+// daemon, `bosun reconcile`, `bosun alert` and the hot reload. For every field
+// the order is the BOSUN_ variable, then the legacy variable, then bosun.yaml.
+// Credentials and recipients resolve field by field, so a key from the
+// environment is used with recipients named in bosun.yaml. Webhook headers
+// resolve together with the webhook URL.
+func extractAlertConfigWith(cfg configFile, getenv envLookup) AlertConfig {
 	raw := cfg.Alerts
 
 	alertCfg := AlertConfig{
@@ -1355,28 +1375,46 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 
 	// Environment variable overrides for sensitive values.
 	// BOSUN_-prefixed vars take precedence; legacy unprefixed vars are fallback.
-	alertCfg.DiscordWebhookURL = getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
-	alertCfg.SlackWebhookURL = getEnvOrDefault("BOSUN_SLACK_WEBHOOK_URL", getEnvOrDefault("SLACK_WEBHOOK_URL", alertCfg.SlackWebhookURL))
-	alertCfg.SendGridAPIKey = getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
-	alertCfg.SendGridFromEmail = getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
-	alertCfg.SendGridFromName = getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
-	alertCfg.TwilioAccountSID = getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID))
-	alertCfg.TwilioAuthToken = getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken))
-	alertCfg.TwilioFromNumber = getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber))
+	alertCfg.DiscordWebhookURL = envOrDefault(getenv, "BOSUN_DISCORD_WEBHOOK_URL", envOrDefault(getenv, "DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
+	alertCfg.SlackWebhookURL = envOrDefault(getenv, "BOSUN_SLACK_WEBHOOK_URL", envOrDefault(getenv, "SLACK_WEBHOOK_URL", alertCfg.SlackWebhookURL))
+	alertCfg.SendGridAPIKey = envOrDefault(getenv, "BOSUN_SENDGRID_API_KEY", envOrDefault(getenv, "SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
+	alertCfg.SendGridFromEmail = envOrDefault(getenv, "BOSUN_SENDGRID_FROM_EMAIL", envOrDefault(getenv, "SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
+	alertCfg.SendGridFromName = envOrDefault(getenv, "BOSUN_SENDGRID_FROM_NAME", envOrDefault(getenv, "SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
+	alertCfg.TwilioAccountSID = envOrDefault(getenv, "BOSUN_TWILIO_ACCOUNT_SID", envOrDefault(getenv, "TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID))
+	alertCfg.TwilioAuthToken = envOrDefault(getenv, "BOSUN_TWILIO_AUTH_TOKEN", envOrDefault(getenv, "TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken))
+	alertCfg.TwilioFromNumber = envOrDefault(getenv, "BOSUN_TWILIO_FROM_NUMBER", envOrDefault(getenv, "TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber))
 
-	// Webhook environment variable overrides.
-	alertCfg.WebhookURL = getEnvOrDefault("BOSUN_WEBHOOK_URL", alertCfg.WebhookURL)
-	if headersJSON := os.Getenv("BOSUN_WEBHOOK_HEADERS"); headersJSON != "" {
-		var headers map[string]string
-		if err := json.Unmarshal([]byte(headersJSON), &headers); err == nil {
-			alertCfg.WebhookHeaders = headers
-		} else {
-			log.Warn().
-				Err(err).
-				Msg("Failed to parse BOSUN_WEBHOOK_HEADERS as JSON, ignoring")
+	// Recipients are comma-separated lists. Without a source for them a provider
+	// has credentials but no recipients, reports itself unconfigured, and its
+	// alerts are dropped silently.
+	alertCfg.SendGridToEmails = envRecipients(getenv, alertCfg.SendGridToEmails, "BOSUN_SENDGRID_TO_EMAILS", "SENDGRID_TO_EMAILS")
+	alertCfg.TwilioToNumbers = envRecipients(getenv, alertCfg.TwilioToNumbers, "BOSUN_TWILIO_TO_NUMBERS", "TWILIO_TO_NUMBERS")
+
+	// Webhook: the URL and its headers resolve together. Headers often carry an
+	// Authorization value, so environment headers must never ride along to a URL
+	// that only bosun.yaml chose, and a file's headers must not go to a URL the
+	// environment replaced.
+	if envURL := getenv("BOSUN_WEBHOOK_URL"); envURL != "" {
+		alertCfg.WebhookURL = envURL
+		alertCfg.WebhookHeaders = nil
+		if headersJSON := getenv("BOSUN_WEBHOOK_HEADERS"); headersJSON != "" {
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(headersJSON), &headers); err == nil {
+				alertCfg.WebhookHeaders = headers
+			} else {
+				log.Warn().
+					Err(err).
+					Msg("Failed to parse BOSUN_WEBHOOK_HEADERS as JSON, ignoring")
+			}
 		}
+	} else if getenv("BOSUN_WEBHOOK_HEADERS") != "" {
+		// Warn, not Debug: before this resolver the variable applied to a webhook
+		// URL from bosun.yaml too, so an operator who relied on that gets a
+		// receiver that rejects the request and nothing else to explain why. The
+		// message names the variables, never the header value.
+		log.Warn().Msg("Ignoring BOSUN_WEBHOOK_HEADERS: it applies only together with BOSUN_WEBHOOK_URL, and the webhook URL comes from bosun.yaml")
 	}
-	alertCfg.WebhookMethod = getEnvOrDefault("BOSUN_WEBHOOK_METHOD", alertCfg.WebhookMethod)
+	alertCfg.WebhookMethod = envOrDefault(getenv, "BOSUN_WEBHOOK_METHOD", alertCfg.WebhookMethod)
 
 	return alertCfg
 }
