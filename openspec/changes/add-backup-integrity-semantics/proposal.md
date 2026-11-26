@@ -88,7 +88,8 @@ target state**.
 
 - Affected specs: `reconcile` — MODIFIED `Configuration Backup`,
   `File Deployment`, and `Pipeline Orchestration`; ADDED
-  `Backup-Backed Rollback Integrity`.
+  `Backup-Backed Rollback Integrity`, `Rollback Outcome Reporting`, and
+  `Rollback Without a Backup`.
 - Affected code:
   - `internal/reconcile/backup.go` — `Backup` (`:54-110`), `BackupRemote`
     discarded `sshErr` and `2>/dev/null` (`:150-184`), `VerifyBackup`,
