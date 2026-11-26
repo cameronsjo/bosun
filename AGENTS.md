@@ -284,7 +284,9 @@ Spec PRs follow an iterative review cycle before implementation begins:
 5. **Label `ready-to-build`** — spec is stable, implementation can begin
 6. **Rate-limit handling**: If CodeRabbit doesn't review within ~5min, trigger manually with `@coderabbitai review`. The "Review triggered" ack ≠ a review will run — rate limits drop reviews silently; trust the check's `startedAt`/`completedAt`, not the ack comment. CodeRabbit is **advisory** here (`main` has no branch protection → `mergeStateStatus: UNSTABLE`, never `BLOCKED`), so a persistent stall or stale `CHANGES_REQUESTED` doesn't hard-block a merge — fall back to green CI + your own verification and document the call on the PR.
 
-The `ready-to-build` label is a gate: do not start implementation until it's applied. Use `/spec-review` to automate the cycle.
+The `ready-to-build` label is a gate: do not start implementation until it's applied.
+
+**Validate Spec pins openspec to 2.1.0** (`.github/workflows/spec-review.yml`). From 2.1.1, `validate --strict` fails a MODIFIED requirement over 500 characters, and some blocks on `main` (reconcile § File Deployment) already are. ADDED requirements over 500 characters fail under every version, and CI validates every change dir a PR touches, so editing `data-driven-deploy-paths` or `add-backup-integrity-semantics` fails on their existing blocks. Match CI with `npx @fission-ai/openspec@2.1.0 validate <id> --strict`; raise the pin only after splitting the long blocks. Use `/spec-review` to automate the cycle.
 
 ## Adding a New Command
 
@@ -390,7 +392,7 @@ do not gain legacy aliases.
 | `BOSUN_GIT_USERNAME` | daemon, reconcile, validate | Username for private HTTPS Git Basic auth; must be set with `BOSUN_GIT_TOKEN` (no legacy alias) |
 | `BOSUN_GIT_TOKEN` | daemon, reconcile, validate | Token used as the private HTTPS Git Basic-auth password; must be set with `BOSUN_GIT_USERNAME` (no legacy alias) |
 | `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
-| `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
+| `BOSUN_POLL_INTERVAL` | daemon | Polling interval: bare seconds or a Go duration (default: `3600`). `0` disables polling; a negative or invalid value warns and keeps the default |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
 | `BOSUN_SOCKET_ALLOWED_UIDS` | daemon | Comma-separated numeric UIDs allowed to reach the Unix socket's peer-authorized routes (`POST /trigger`, `GET /config`) in addition to the daemon's own UID |
 | `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | daemon | Opt out of fail-closed Unix socket peer-credential authorization (default: `false`; strict `== "true"`). Required for `/trigger` and `/config` on platforms without peer credentials; logged loudly at startup and per request |
@@ -423,11 +425,11 @@ do not gain legacy aliases.
 | `BOSUN_RECONCILE_MAX_TIMEOUT` | daemon | Hard cap on one reconcile cycle's run, compose up included (default: `30m`; accepts Go durations or plain seconds). Keeps running while `BOSUN_RECONCILE_TIMEOUT` is paused; a value below `BOSUN_RECONCILE_TIMEOUT` is raised to it with a warning. When it fires, the running compose file fails, later files are neither started nor rolled back, and the orphan pass is skipped. Worst case per cycle: this cap plus `BOSUN_RECONCILE_ROLLBACK_GRACE` |
 | `BOSUN_RECONCILE_ROLLBACK_GRACE` | daemon | How far past the `BOSUN_RECONCILE_MAX_TIMEOUT` deadline backup extraction and rollbacks may run (default: `5m`; accepts Go durations or plain seconds). Applies to every extraction and rollback in the cycle, per-file and health-gate, whether started before or after the cap fires; each also keeps its `BOSUN_COMPOSE_UP_TIMEOUT` bound |
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
-| `BOSUN_API_TIMEOUT` | daemon | API request timeout |
+| `BOSUN_API_TIMEOUT` | daemon | API request timeout. The TCP API's 30s response write deadline is extended per route to the handler budget plus 5s for container list, logs and restart (restart is twice this value), capped at 10 minutes |
 | `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | daemon | Cooldown between repeated drift alerts (default: `1h`) |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | daemon | Debounce window before first drift alert fires (default: `0` = disabled) |
-| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`). A resolved item is always retired from the alerted state, whether or not a notification is sent |
 | `BOSUN_DRIFT_SELF_HEAL` | daemon | Trigger reconciliation when drift detected (default: `false`) |
 | `BOSUN_DRIFT_SELF_HEAL_COOLDOWN` | daemon | Minimum interval between self-heal reconciliations (default: `15m`) |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | daemon | Positive attempt bound for one stable drift signature (default: `3`; persisted across daemon restarts) |
@@ -443,9 +445,15 @@ do not gain legacy aliases.
 | `BOSUN_SENDGRID_API_KEY` | config | SendGrid API key (overrides config file; legacy: `SENDGRID_API_KEY`) |
 | `BOSUN_SENDGRID_FROM_EMAIL` | config | SendGrid sender email (overrides config file; legacy: `SENDGRID_FROM_EMAIL`) |
 | `BOSUN_SENDGRID_FROM_NAME` | config | SendGrid sender name (overrides config file; legacy: `SENDGRID_FROM_NAME`) |
+| `BOSUN_SENDGRID_TO_EMAILS` | config | Comma-separated SendGrid recipients (overrides `sendgrid_to_emails`; legacy: `SENDGRID_TO_EMAILS`). A value with no address in it counts as unset and falls through to the next source |
 | `BOSUN_TWILIO_ACCOUNT_SID` | config | Twilio account SID (overrides config file; legacy: `TWILIO_ACCOUNT_SID`) |
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
+| `BOSUN_TWILIO_TO_NUMBERS` | config | Comma-separated Twilio recipients (overrides `twilio_to_numbers`; legacy: `TWILIO_TO_NUMBERS`). Blank or separators-only counts as unset |
+| `BOSUN_SLACK_WEBHOOK_URL` | config | Slack webhook URL (overrides config file; legacy: `SLACK_WEBHOOK_URL`) |
+| `BOSUN_WEBHOOK_URL` | config | Generic alert webhook URL (overrides `webhook_url`). When set, the URL and `BOSUN_WEBHOOK_HEADERS` replace both `webhook_url` and `webhook_headers` from the config file |
+| `BOSUN_WEBHOOK_HEADERS` | config | JSON object of headers for the alert webhook, e.g. `{"Authorization":"Bearer ..."}`. Used only together with `BOSUN_WEBHOOK_URL`; ignored, with a warning that names the variable and not its value, when the URL comes from the config file. Malformed JSON is ignored with a warning |
+| `BOSUN_WEBHOOK_METHOD` | config | HTTP method for the alert webhook (overrides `webhook_method`) |
 | `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
@@ -465,6 +473,7 @@ do not gain legacy aliases.
 - **"default" is a reserved target name** — a *lone* `name: default` target (any case) is honored as the implicit default's configuration: its `project_name`, paths, `state_file`, and `staging_dir` win over the flat fields (#391). A *multi-target* config that also declares a `default` target is a hard error (`ResolveTargets()` returns an error naming the offender) rather than silently dropping it. `ResolveTargets()` returns `([]Target, error)` — callers must check the error
 - **Cobra `resetRootCmd` strips flags** — `ResetFlags()` in test helpers wipes registered flags; don't test flag existence after calling `executeCmd` on a different command
 - **Async trigger reconciles are daemon-owned** — socket, TCP, API, webhook, manual, and drift self-heal handlers register through `startReconcileGoroutine`, inherit daemon shutdown cancellation without inheriting request cancellation, and join `d.wg`. Tests that use these handlers must wait with `waitForDaemonTasks` before temp-dir cleanup; do not restore flag polling or detached goroutines
+- **`reconcileMu` is never held across I/O** (#793) — drift admission is the `drifting` flag; a trigger waits on `driftDone` as a counted `reconcileWaiters` entry, and drift skips while any trigger waits. `drifting` is cleared in a `defer` because `driftCheckLoop` recovers panics
 - **Unix socket mode is applied before publication** — `SocketConfig.SocketMode` and `daemon.Config.SocketMode` default to `0660`. On Unix, `listenUnixSocket` binds under a private staging directory, chmods there, then atomically publishes into place; do not replace this with process-global `umask` or final-path `Listen` then `Chmod`. Cleanup is inode-checked and stale symlinks/non-sockets are rejected
 - **CLAUDE.md is a symlink** to `AGENTS.md`. When staging for git, `git add AGENTS.md` (not `CLAUDE.md`)
 - **Circuit breaker**: after 3 consecutive deploy failures, daemon stops retrying. Reset with `bosun trigger -f`
@@ -473,6 +482,7 @@ do not gain legacy aliases.
 - **Config graceful degradation**: most `config.Load()` errors are swallowed at startup, and most `config.LoadFrom()` failures during reconciliation are logged as warnings — reconcile works without a project config file. Invalid `exec` post-sync hooks are the narrow fail-closed exception: startup or a GitOps reload aborts before deployment. The reconciler re-reads `bosun.yaml` from the repo after each git pull to pick up hook changes. A valid empty file is an authoritative snapshot; a missing/malformed file retains current hook state
 - **Hook reload presence**: after a successful snapshot, absent/empty root `post_sync_hooks` clears file hooks, absent `hook_settle_delay` retains its effective value, and explicit `0s` clears it. Target omission inherits root, explicit `[]` clears, and removed descriptors fall back to root until the required topology restart
 - **Env var precedence**: `BOSUN_POST_SYNC_HOOKS` (JSON) completely *replaces* hooks from `bosun.yaml`, it does not merge. Target hooks supplied by `BOSUN_TARGETS` are environment-owned too
+- **A dry run persists no state**: a `Reconciler` method writes deploy state only through `r.persistState`, which is a no-op under `Config.DryRun` (#792). A direct `SaveState(r.config.StateFile, ...)` there re-opens the bug. The daemon's drift tick (`runDriftCheckForTarget`) returns before any save, breaker stop, self-heal, or alert when `targetCfg.DryRun`; keep that gate after detection and before the first mutation. Tests that need real state use `DryRun:false` plus `WithDeployOps(&DeployOps{DryRun: true})`; daemon tests that exercise the tick use a non-dry config. The two flags are separate
 - **Dirty repo is non-fatal**: `Pull()` warns on uncommitted changes and proceeds — the hard reset discards them. Don't add a dirty-state failure gate; these are stale reconciliation artifacts
 - **Hook paths are staging-relative**: Content-hash sync (`CopyDirIfChanged`) returns paths relative to each deploy target dir and `deployLocal` prefixes them with `t.RelPath`. Hook globs use staging-relative paths (e.g., `appdata/authelia/**`); git-diff fallback strips the configured infra prefix into that same namespace before matching
 - **`filepath.Join` silently drops prefix for absolute paths**: `filepath.Join("prefix", "/absolute/path")` returns `/absolute/path`. When adding paths to `WrittenFiles`, always use relative paths (e.g., `filepath.Base()`) so `PrefixLatest` works correctly

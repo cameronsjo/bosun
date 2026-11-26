@@ -126,7 +126,7 @@ Enable periodic reconciliation with `--poll-interval`:
 bosun daemon --poll-interval 3600  # Check every hour
 ```
 
-Set to `0` to disable polling (webhook-only mode).
+Set to `0` to disable polling (webhook-only mode). `BOSUN_POLL_INTERVAL=0` does the same (an explicit `0` is honored, not treated as unset); the value is bare seconds or a Go duration such as `90s`, and a negative or invalid value warns and keeps the 1h default.
 
 ### Concurrency
 
@@ -251,7 +251,7 @@ regular template files. Directory rendering now refuses a symlinked template
 with its path and that remedy, preventing deployment or stale-file pruning from
 a partial render. Windows lock behavior is unchanged.
 
-The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
+The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A dry run, in the daemon or the one-shot command, never writes this file: `Reconciler.Run` reads the state to make its skip and circuit-breaker decisions and drops every write, so the file is byte-identical afterwards (or still absent). The one-shot command also works against a temporary copy of existing state, as a second barrier. Because no dry run advances the state, a dry-run daemon re-runs the whole pipeline, including pre-deploy hooks, on every poll instead of skipping a commit it already rendered. The daemon's periodic drift check is observe-only under dry run too (see Drift Detection).
 
 Container deployments must persist `/var/lib/bosun`. The shipped Compose and
 Unraid definitions bind that directory to `/mnt/user/appdata/bosun/state`; keep
@@ -326,7 +326,7 @@ Drift detection compares **declared state** (services defined in rendered compos
 
 | Type | Severity | Condition |
 |------|----------|-----------|
-| `missing` | Critical | Service not running, or running but state is not `running` (e.g., exited) |
+| `missing` | Critical | The service's observed container is not running or restarting (e.g., exited); see [Container Matching](#container-matching) for which container that is |
 | `unhealthy` | Critical | Service running but Docker health check reports `unhealthy` |
 | `image_mismatch` | Warning | Running image tag differs from declared (e.g., `nginx:1.24` vs `nginx:1.25`) |
 
@@ -339,6 +339,8 @@ Containers are matched to declared services using Docker Compose v2 labels:
 
 Labels are preferred because they are authoritative and unambiguous. For containers without labels, a name-based fallback parses the `<project>-<service>-<replica>` convention.
 
+A service can match several containers (replicas, a stopped leftover). Bosun observes one per service for drift, the skip check, and the post-deploy health poll: a running or restarting container wins over a stopped one, then the oldest container, then the smallest container ID. Health and a crash-looping replica's restarting/running alternation never change the pick, so a stopped leftover beside a running replica is not reported as `missing`. An unhealthy replica that is not the selected one is not reported ([#853](https://github.com/cameronsjo/bosun/issues/853)). The restart breaker does not use this pick; it watches every running or restarting container of the service (see [Restart Circuit Breaker](#restart-circuit-breaker)).
+
 ### Image Comparison
 
 Images are normalized before comparison: bare names (e.g., `nginx`) are treated as `nginx:latest`, including names whose registry carries a port (`localhost:5000/app` is `localhost:5000/app:latest`). Digest references (`nginx@sha256:...`) are compared exactly.
@@ -347,19 +349,23 @@ Images are normalized before comparison: bare names (e.g., `nginx`) are treated 
 
 When running as a daemon, drift checks run on a configurable interval (default: 5 minutes, set via `BOSUN_DRIFT_INTERVAL`). The loop:
 
-1. Skips if a reconciliation is in progress (avoids state file race conditions)
+1. Skips if a reconciliation is in progress or a reconcile trigger is waiting (avoids state file race conditions)
 2. Loads declared state from the deploy state file
 3. Queries Docker for actual state
 4. Filters through the debounce layer (if enabled via `BOSUN_DRIFT_ALERT_DEBOUNCE`)
 5. Filters through the dedup layer (per-item cooldown via `BOSUN_DRIFT_ALERT_COOLDOWN`)
-6. Updates the state file with drift results and debounce/dedup timestamps
-7. Sends an alert if critical drift persists past both layers
+6. Sends an alert if critical drift persists past both layers
+7. Updates the state file with drift results and debounce/dedup timestamps, recording only alerts that were delivered
+
+A reconcile trigger that arrives while a drift check runs waits for that check to finish, then starts. Status endpoints (`/status`, `/api/status`) are not blocked by a running drift check.
 
 Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
 
+**Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only.** It still detects drift, logs it, and updates metrics, and it keeps the last result in memory: `GET /api/drift` (default target) and the per-target `drift` record in detailed status serve that observation (status, items, `checked_at`), not the state file, whose drift fields stay frozen at the last real run. Before the first dry-run tick they report `unknown` with no items. `bosun drift` reads the state file and therefore shows the frozen record. The tick does not save the state file, run the restart circuit breaker (so no container is stopped), consume a self-heal attempt or trigger a reconcile, or send a drift, resolution, or breaker alert. Dedup and cooldown state could not persist across ticks, so alerts would repeat every interval.
+
 #### Restart Circuit Breaker
 
-The restart circuit breaker samples container identity and restart counts during each local target's drift check. Once restart counts begin increasing, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so sustained slow loops still accumulate toward `BOSUN_RESTART_THRESHOLD` even when checks are farther apart than `BOSUN_RESTART_WINDOW`. A deploy can recreate a container and reset Docker's restart count; Bosun treats the changed identity as recreation, keeps an existing trip active, and resolves it only after the same container identity has no additional restarts across the next drift-check interval. Missing containers retain the trip but restart the stability grace when they return; transient inspect failures preserve the last persisted observation and cannot count as recovery. The breaker stops containers only within the effective Compose project for the target being checked. Each candidate must carry Compose labels naming that project and its service; a container matched only by a `<project>-` name prefix is never stopped. A named local target without `project_name` uses the existing `compose` fallback, and because any stack started from a directory named `compose` gets that name, the breaker then also requires the container's `com.docker.compose.project.working_dir` label to be the target's `<local appdata>/compose` directory (symlinks on either path are resolved before comparing); a trip stops the container by the ID that was inspected, not by name; an implicit default target with no project name fails closed before inspection or stopping and preserves its restart tracking. When the breaker is enabled in that unresolved implicit-default condition, daemon startup emits one warning and `bosun doctor` reports the same condition; set `project_name` on the implicit default target (a target named `default` in `bosun.yaml`) or in `BOSUN_TARGETS` to restore protection from startup. A root-level `project_name` in `bosun.yaml` scopes the breaker only after a reconcile loads it from the repository; until then the breaker stops nothing, and startup and `bosun doctor` still warn and say why. Multiple targets keep independent project scopes and state files. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; daemon configuration and `bosun doctor` warn when the sampling interval is longer.
+The restart circuit breaker samples container identity and restart counts during each local target's drift check, reusing that check's container listing; every candidate is re-inspected before it is evaluated, and a container created after the listing is evaluated on the next drift check. A service with several replicas has every running or restarting container evaluated, each with its own baseline keyed by container ID, and each one that reaches the threshold is stopped; a container the breaker stopped stays tripped, with no resolved alert, while a sibling runs, and resolves only after that container, or the container that replaces it, runs stably. Once restart counts begin increasing, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so sustained slow loops still accumulate toward `BOSUN_RESTART_THRESHOLD` even when checks are farther apart than `BOSUN_RESTART_WINDOW`. A deploy can recreate a container and reset Docker's restart count; Bosun treats the changed identity as recreation, keeps an existing trip active, and resolves it only after the same container identity has no additional restarts across the next drift-check interval. A tripped container that is stopped (including one the breaker stopped) or that was not observed in a sample retains the trip and restarts the stability grace when it runs again; a tripped container that no longer exists, and that no container with the same Compose container number replaced, clears its entry without a resolved alert and is logged at info level, so the next deploy starts from a fresh baseline; a service is reported resolved only when none of its containers is still tripped, and it is reported once: when the last tripped container recovers, or, when the last one instead goes away and clears quietly, if another container of the service recovered after the trip alert (remembered across drift checks as `recovered_since_alert` in the state file, and reset when the service trips again), while clearing every tripped container with no recovery reports nothing; transient inspect failures preserve the last persisted observation and cannot count as recovery. The breaker stops containers only within the effective Compose project for the target being checked. Each candidate must carry Compose labels naming that project and its service; a container matched only by a `<project>-` name prefix is never stopped. A named local target without `project_name` uses the existing `compose` fallback, and because any stack started from a directory named `compose` gets that name, the breaker then also requires the container's `com.docker.compose.project.working_dir` label to be the target's `<local appdata>/compose` directory (symlinks on either path are resolved before comparing); a trip stops the container by the ID that was inspected, not by name; an implicit default target with no project name fails closed before inspection or stopping and preserves its restart tracking. When the breaker is enabled in that unresolved implicit-default condition, daemon startup emits one warning and `bosun doctor` reports the same condition; set `project_name` on the implicit default target (a target named `default` in `bosun.yaml`) or in `BOSUN_TARGETS` to restore protection from startup. A root-level `project_name` in `bosun.yaml` scopes the breaker only after a reconcile loads it from the repository; until then the breaker stops nothing, and startup and `bosun doctor` still warn and say why. Multiple targets keep independent project scopes and state files. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; daemon configuration and `bosun doctor` warn when the sampling interval is longer.
 
 #### Drift Self-Heal Breaker
 
@@ -448,7 +454,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `BOSUN_RESTART_WINDOW` | No | `10m` | Restart observation window; keep at least as long as the drift interval |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | No | `1h` | Cooldown between repeated drift alerts per item |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | No | `0` | Debounce window before first drift alert (0 = disabled) |
-| `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications. A resolved item is always retired from the alerted state, whether or not a notification is sent |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | No | `60s` | Health gate polling timeout (`0` disables the gate) |
 
 Private HTTPS repositories use `BOSUN_GIT_USERNAME` and `BOSUN_GIT_TOKEN` as
@@ -1146,7 +1152,10 @@ Use `--dry-run` to:
 - Preview deploy changes without applying
 - Skip service restarts
 - Skip backup creation
+- Leave the deploy state file untouched
 - Verify configuration without risk
+
+A dry run still sends failure, success, and interruption alerts (`--dry-run` does not imply `--no-alerts`), but it sends no recovery alert: with no state written it cannot record that a retraction was delivered, so it would repeat on every run.
 
 ```bash
 # Safe way to test configuration changes

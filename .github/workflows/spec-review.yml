@@ -41,7 +41,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install OpenSpec
-        run: npm install -g @fission-ai/openspec
+        # Pinned: 2.1.1 and later fail --strict on any MODIFIED requirement
+        # over 500 characters, and a MODIFIED delta must restate the whole
+        # block. See AGENTS.md § Spec Review Workflow (#828).
+        run: npm install -g @fission-ai/openspec@2.1.0
 
       - name: Determine changed change IDs
         id: change-id

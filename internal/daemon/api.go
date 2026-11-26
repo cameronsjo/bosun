@@ -13,6 +13,75 @@ import (
 	"github.com/cameronsjo/bosun/internal/reconcile"
 )
 
+const (
+	// apiWriteDeadlineMargin is the time left to write a response after the
+	// handler's own context budget runs out.
+	apiWriteDeadlineMargin = 5 * time.Second
+	// apiWriteDeadlineCeiling bounds the extended deadline so a huge
+	// BOSUN_API_TIMEOUT cannot produce an unbounded or overflowed one.
+	apiWriteDeadlineCeiling = 10 * time.Minute
+)
+
+// apiWriteDeadlinePolicy holds the three numbers behind the extended API write
+// deadline: the floor (the server's own deadline, which an extension never
+// shortens), the margin added to the handler budget, and the ceiling. Production
+// uses defaultAPIWriteDeadlinePolicy. A test sets Daemon.apiWriteDeadlines to a
+// sub-second policy so a fast handler can tell which routes extend their
+// deadline and by which factor.
+type apiWriteDeadlinePolicy struct {
+	floor   time.Duration
+	margin  time.Duration
+	ceiling time.Duration
+}
+
+func defaultAPIWriteDeadlinePolicy() apiWriteDeadlinePolicy {
+	return apiWriteDeadlinePolicy{
+		floor:   tcpWriteTimeout,
+		margin:  apiWriteDeadlineMargin,
+		ceiling: apiWriteDeadlineCeiling,
+	}
+}
+
+// deadlineFor returns how long from now a response write may take for a handler
+// whose context budget is factor*apiTimeout, plus the margin. It never shortens
+// the floor and never exceeds the ceiling. Restart is the longest API budget
+// (factor 2); a longer future route passes its own factor.
+func (p apiWriteDeadlinePolicy) deadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
+	if apiTimeout <= 0 || factor <= 0 {
+		return p.floor
+	}
+	// Compare before multiplying: anything past this is capped anyway, and the
+	// product would overflow for a value near the Duration maximum.
+	if apiTimeout > (p.ceiling-p.margin)/time.Duration(factor) {
+		return p.ceiling
+	}
+	return max(p.floor, time.Duration(factor)*apiTimeout+p.margin)
+}
+
+// apiWriteDeadlineFor is deadlineFor under the production policy.
+func apiWriteDeadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
+	return defaultAPIWriteDeadlinePolicy().deadlineFor(apiTimeout, factor)
+}
+
+// extendAPIWriteDeadline moves this response's write deadline out to cover a
+// handler whose budget is factor*BOSUN_API_TIMEOUT (see deadlineFor). A writer
+// that cannot change its deadline (httptest.ResponseRecorder, or a wrapper
+// without Unwrap) reports ErrNotSupported; the server's own deadline then
+// stands and the request goes on.
+func (d *Daemon) extendAPIWriteDeadline(w http.ResponseWriter, factor int64) {
+	policy := defaultAPIWriteDeadlinePolicy()
+	if d.apiWriteDeadlines != nil {
+		policy = *d.apiWriteDeadlines
+	}
+	deadline := time.Now().Add(policy.deadlineFor(d.config.APITimeout, factor))
+	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil {
+		logger := log.Component(log.ComponentHTTP)
+		logger.Debug().
+			Err(err).
+			Msg("Could not extend the response write deadline; the server default stands")
+	}
+}
+
 // APIStatusResponse is the extended status response for the WebUI API.
 type APIStatusResponse struct {
 	Health        string               `json:"health"`
@@ -133,6 +202,7 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
+	d.extendAPIWriteDeadline(w, 1)
 
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
@@ -218,6 +288,7 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
+	d.extendAPIWriteDeadline(w, 1)
 
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
 	if err != nil {
@@ -256,6 +327,7 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*d.config.APITimeout)
 	defer cancel()
+	d.extendAPIWriteDeadline(w, 2)
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
 		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to restart container")
@@ -337,15 +409,29 @@ func (d *Daemon) handleAPIDrift(w http.ResponseWriter, r *http.Request) {
 
 	state := reconcile.LoadState(stateFile)
 
-	resp := APIDriftResponse{
-		Status:         computeDriftStatus(len(state.DriftItems), state.LastDeployedCommit),
-		DeclaredCount:  len(state.DeclaredServices),
-		DriftItemCount: len(state.DriftItems),
-		Items:          convertDriftItems(state.DriftItems),
+	// A dry-run daemon saves no state, so the file's drift fields are frozen at
+	// the last real run. Serve the daemon's own observation of the default target
+	// instead (nothing until its first tick) rather than stale items.
+	driftItems, driftCheckedAt := state.DriftItems, state.DriftCheckedAt
+	status := computeDriftStatus(len(driftItems), state.LastDeployedCommit)
+	if d.config.ReconcileConfig.DryRun {
+		driftItems, driftCheckedAt = nil, time.Time{}
+		status = "unknown" // no observation yet: do not claim clean without data
+		if observed, ok := d.observedDriftFor(reconcile.DefaultTargetName); ok {
+			driftItems, driftCheckedAt = observed.items, observed.checkedAt
+			status = computeDriftStatus(len(driftItems), state.LastDeployedCommit)
+		}
 	}
 
-	if !state.DriftCheckedAt.IsZero() {
-		resp.CheckedAt = &state.DriftCheckedAt
+	resp := APIDriftResponse{
+		Status:         status,
+		DeclaredCount:  len(state.DeclaredServices),
+		DriftItemCount: len(driftItems),
+		Items:          convertDriftItems(driftItems),
+	}
+
+	if !driftCheckedAt.IsZero() {
+		resp.CheckedAt = &driftCheckedAt
 	}
 
 	w.Header().Set("Content-Type", "application/json")

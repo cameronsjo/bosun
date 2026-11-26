@@ -23,6 +23,17 @@ const ComposeProjectLabel = "com.docker.compose.project"
 // ComposeServiceLabel is the label Docker Compose v2 sets for the service name.
 const ComposeServiceLabel = "com.docker.compose.service"
 
+// ComposeContainerNumberLabel is the label Docker Compose v2 sets to the
+// container's replica number within its service.
+const ComposeContainerNumberLabel = "com.docker.compose.container-number"
+
+// ServiceContainer is one container of a service, in any state.
+type ServiceContainer struct {
+	Name  string // Full Docker container name (for inspect calls)
+	ID    string // Docker short ID
+	State string
+}
+
 // ActualService represents the observed state of a running container.
 type ActualService struct {
 	Name          string
@@ -30,6 +41,11 @@ type ActualService struct {
 	Image         string
 	State         string
 	Health        string
+	// Containers lists every container of the service, in any state, oldest
+	// first. The fields above describe the one selected by preferContainer;
+	// the restart breaker evaluates each of these. A hand-built value may leave
+	// it empty, which means the selected container is the only one.
+	Containers []ServiceContainer
 }
 
 // DriftIgnoreRule defines a pattern for suppressing known drift noise.
@@ -288,27 +304,31 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 
 	logger.Debug().Int("total_containers", len(containers)).Msg("Listed containers, filtering by project")
 
-	var actual []ActualService
-	seen := make(map[string]bool)
-
+	// A service can have several containers (replicas, stopped leftovers).
+	// Keep one per service, chosen by preferContainer so the pick does not
+	// depend on Docker's list order.
+	selected := make(map[string]docker.ContainerInfo)
+	all := make(map[string][]docker.ContainerInfo)
 	for _, c := range containers {
 		serviceName, matched := matchContainer(c, projectName)
 		if !matched {
 			continue
 		}
-
-		// Deduplicate by service name (replicas produce multiple containers).
-		if seen[serviceName] {
-			continue
+		all[serviceName] = append(all[serviceName], c)
+		if cur, ok := selected[serviceName]; !ok || preferContainer(cur, c) {
+			selected[serviceName] = c
 		}
-		seen[serviceName] = true
+	}
 
+	var actual []ActualService
+	for serviceName, c := range selected {
 		actual = append(actual, ActualService{
 			Name:          serviceName,
 			ContainerName: c.Name,
 			Image:         c.Image,
 			State:         c.State,
 			Health:        c.Health,
+			Containers:    serviceContainers(all[serviceName]),
 		})
 	}
 
@@ -322,6 +342,51 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 		Msg("Successfully collected actual container state")
 
 	return actual, nil
+}
+
+// isLiveState reports whether a container state counts as live for selection:
+// running, or restarting (a crash loop). Every other state, paused included, is
+// stopped. It is a rule of its own, not a call to ServiceIsPresent, so a change
+// to the skip check's presence rule cannot silently change which container
+// drift observes.
+func isLiveState(state string) bool {
+	return state == "running" || state == "restarting"
+}
+
+// serviceContainers lists every container of a service, oldest first (then by
+// ID), so the order does not depend on Docker's list order.
+func serviceContainers(infos []docker.ContainerInfo) []ServiceContainer {
+	sorted := make([]docker.ContainerInfo, len(infos))
+	copy(sorted, infos)
+	sort.Slice(sorted, func(i, j int) bool {
+		if !sorted[i].Created.Equal(sorted[j].Created) {
+			return sorted[i].Created.Before(sorted[j].Created)
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	out := make([]ServiceContainer, 0, len(sorted))
+	for _, c := range sorted {
+		out = append(out, ServiceContainer{Name: c.Name, ID: c.ID, State: c.State})
+	}
+	return out
+}
+
+// preferContainer reports whether cand should replace cur as the observed
+// container of a service (Service State Selection). A live container (running
+// or restarting) beats a stopped one; among equals the oldest by creation time
+// wins, then the lexically smaller container ID (Docker's short ID, since
+// Created has one-second resolution and ties are common). Health and the
+// restarting/running alternation of a crash-looping replica never change the
+// pick, so the restart breaker keeps one baseline for it.
+func preferContainer(cur, cand docker.ContainerInfo) bool {
+	curLive, candLive := isLiveState(cur.State), isLiveState(cand.State)
+	if curLive != candLive {
+		return candLive
+	}
+	if !cand.Created.Equal(cur.Created) {
+		return cand.Created.Before(cur.Created)
+	}
+	return cand.ID < cur.ID
 }
 
 // matchContainer determines if a container belongs to the given compose project
@@ -544,12 +609,20 @@ func normalizeImage(image string) string {
 // state file and compares against actual Docker state. Ignore rules filter
 // out known drift noise before reporting.
 func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projectName string, ignoreRules []DriftIgnoreRule) (*DriftReport, error) {
+	report, _, err := RunDriftCheckWithState(ctx, client, LoadState(stateFile), projectName, ignoreRules)
+	return report, err
+}
+
+// RunDriftCheckWithState runs a drift check against an already loaded deploy
+// state and also returns the container snapshot it compared against, so a
+// caller that needs both (the daemon's drift tick and restart breaker) reads
+// the state file and lists containers once.
+func RunDriftCheckWithState(ctx context.Context, client *docker.Client, state *DeployState, projectName string, ignoreRules []DriftIgnoreRule) (*DriftReport, []ActualService, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	start := time.Now()
 
-	state := LoadState(stateFile)
-	if len(state.DeclaredServices) == 0 {
-		return nil, fmt.Errorf("no declared services in state file (has a deployment been completed?)")
+	if state == nil || len(state.DeclaredServices) == 0 {
+		return nil, nil, fmt.Errorf("no declared services in state file (has a deployment been completed?)")
 	}
 
 	logger.Debug().
@@ -559,7 +632,7 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 
 	actual, err := CollectActualState(ctx, client, projectName)
 	if err != nil {
-		return nil, fmt.Errorf("collect actual state: %w", err)
+		return nil, nil, fmt.Errorf("collect actual state: %w", err)
 	}
 
 	report := CompareDrift(state.DeclaredServices, actual)
@@ -592,5 +665,5 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 	}
 	logEvent.Msg("Drift check completed")
 
-	return report, nil
+	return report, actual, nil
 }

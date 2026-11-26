@@ -450,6 +450,8 @@ tunnel:
   health_endpoint: https://bosun.example.com/health
 ```
 
+`bosun radio status` and `bosun doctor` pass these three keys to the Cloudflare provider. With `tunnel_name` set, the status comes from `cloudflared tunnel info` (falling back to `health_endpoint` if that command fails); otherwise `health_endpoint` is requested and a `200` counts as connected; with neither, bosun looks for a running `cloudflared` process. `hostname` is the name shown in the status output.
+
 ## Alert Configuration
 
 Bosun can notify you when deployments succeed or fail.
@@ -475,6 +477,8 @@ alerts:
 ```
 
 Alerts include: deploy status, commit hash, changed files, error details (on failure), and duration.
+
+**Which source wins.** Every alert setting resolves the same way in the daemon, `bosun reconcile`, `bosun alert status` and `bosun alert test`: the `BOSUN_` environment variable (`BOSUN_SENDGRID_API_KEY`), then the legacy variable (`SENDGRID_API_KEY`), then `bosun.yaml`. Credentials, senders and recipients resolve on their own, so a key from the environment is used with the recipients in `bosun.yaml`. Recipient variables (`SENDGRID_TO_EMAILS`, `TWILIO_TO_NUMBERS` and their `BOSUN_` forms) are comma-separated; a value with no address in it counts as unset and falls through to the next source. `BOSUN_WEBHOOK_HEADERS` (a JSON object) applies only together with `BOSUN_WEBHOOK_URL`; with the URL from `bosun.yaml`, the headers come from `bosun.yaml` too, and Bosun logs a warning naming the variable when it drops them. An environment-only `BOSUN_WEBHOOK_HEADERS` used with a `bosun.yaml` URL is therefore no longer sent; set `BOSUN_WEBHOOK_URL` too, or move the headers into `webhook_headers`.
 
 Discord embeds are bounded to the provider's component limits and 6000-unit
 aggregate so verbose deploy errors remain deliverable. Twilio sends only error

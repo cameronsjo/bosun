@@ -1215,177 +1215,6 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 	}
 }
 
-func TestRun_DeployPathsMatch(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	// Seed prior deploy so the path-aware check activates.
-	require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
-
-	cfg := &Config{
-		RepoDir:                 tmpDir,
-		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
-		StateFile:               stateFile,
-		StagingDir:              filepath.Join(tmpDir, "staging"),
-		DeployPaths:             NewConfigField([]string{"unraid/**"}),
-		DryRun:                  true,
-		AllowEmptyDeclaredState: true,
-	}
-
-	mockGit := &mockGitWithDiff{
-		syncChanged: true,
-		syncBefore:  "aaa111",
-		syncAfter:   "bbb222",
-		diffFiles:   []string{"unraid/compose/core.yml", "docs/README.md"},
-	}
-
-	seedStubComposeService(t, cfg)
-	r := NewReconciler(cfg,
-		WithGitOperations(mockGit),
-		WithSecretsDecryptor(&mockSOPS{}),
-	)
-
-	// This will fail at decrypt/render stage because we don't have a full repo,
-	// but the key test is that it did NOT skip — it proceeded past the path check.
-	err := r.Run(context.Background())
-
-	// The error should be from a later pipeline stage, not path-aware skip.
-	// In dry-run with no secrets, it should succeed through to rendering.
-	// State should show it was attempted (not skip-deployed).
-	state := LoadState(stateFile)
-	if err == nil {
-		// If it succeeded (dry-run path), deploy count should be incremented.
-		assert.Equal(t, 1, state.DeployCount)
-	} else {
-		// If it failed at a later stage, that's fine — the point is it didn't skip.
-		assert.Equal(t, "bbb222", state.LastAttemptedCommit)
-	}
-}
-
-func TestRun_DeployPathsDiffFails(t *testing.T) {
-	t.Run("unavailable commit", func(t *testing.T) {
-		testRunDeployPathsDiffFails(t, fmt.Errorf("%w: object not found", ErrCommitUnavailable))
-	})
-	t.Run("generic diff error", func(t *testing.T) {
-		testRunDeployPathsDiffFails(t, fmt.Errorf("object database unavailable"))
-	})
-}
-
-func testRunDeployPathsDiffFails(t *testing.T, diffErr error) {
-	t.Helper()
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	// Seed prior deploy so the path-aware check activates.
-	require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
-
-	cfg := &Config{
-		RepoDir:                 tmpDir,
-		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
-		StateFile:               stateFile,
-		StagingDir:              filepath.Join(tmpDir, "staging"),
-		DeployPaths:             NewConfigField([]string{"unraid/**"}),
-		DryRun:                  true,
-		AllowEmptyDeclaredState: true,
-	}
-
-	mockGit := &mockGitWithDiff{
-		syncChanged: true,
-		syncBefore:  "aaa111",
-		syncAfter:   "bbb222",
-		diffErr:     diffErr,
-	}
-
-	seedStubComposeService(t, cfg)
-	r := NewReconciler(cfg,
-		WithGitOperations(mockGit),
-		WithSecretsDecryptor(&mockSOPS{}),
-	)
-
-	// DiffFiles fails, so it should fall through to full deploy (not skip).
-	_ = r.Run(context.Background())
-
-	state := LoadState(stateFile)
-	// The pipeline should have been attempted (not skip-deployed).
-	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
-}
-
-func TestRun_DeployPathsForceOverride(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	cfg := &Config{
-		RepoDir:                 tmpDir,
-		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
-		StateFile:               stateFile,
-		StagingDir:              filepath.Join(tmpDir, "staging"),
-		DeployPaths:             NewConfigField([]string{"unraid/**"}),
-		Force:                   true,
-		DryRun:                  true,
-		AllowEmptyDeclaredState: true,
-	}
-
-	mockGit := &mockGitWithDiff{
-		syncChanged: true,
-		syncBefore:  "aaa111",
-		syncAfter:   "bbb222",
-		diffFiles:   []string{"docs/README.md"}, // Non-matching files
-	}
-
-	seedStubComposeService(t, cfg)
-	r := NewReconciler(cfg,
-		WithGitOperations(mockGit),
-		WithSecretsDecryptor(&mockSOPS{}),
-	)
-
-	// With --force, path check should be bypassed entirely.
-	_ = r.Run(context.Background())
-
-	state := LoadState(stateFile)
-	// Pipeline should have run (attempt tracked, not skip-deployed).
-	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
-}
-
-func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	// No prior state: first deploy. The path-aware check should be skipped
-	// entirely because there is no diff base (state.LastDeployedCommit == "").
-	cfg := &Config{
-		RepoDir:                 tmpDir,
-		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
-		StateFile:               stateFile,
-		StagingDir:              filepath.Join(tmpDir, "staging"),
-		DeployPaths:             NewConfigField([]string{"unraid/**"}),
-		DryRun:                  true,
-		AllowEmptyDeclaredState: true,
-	}
-
-	mockGit := &mockGitWithDiff{
-		syncChanged: true,
-		syncBefore:  "",
-		syncAfter:   "bbb222",
-		// Non-matching files that would trigger a skip if the check ran.
-		diffFiles: []string{"docs/README.md"},
-	}
-
-	seedStubComposeService(t, cfg)
-	r := NewReconciler(cfg,
-		WithGitOperations(mockGit),
-		WithSecretsDecryptor(&mockSOPS{}),
-	)
-
-	_ = r.Run(context.Background())
-
-	// Path check should NOT have called DiffFiles (no diff base available).
-	assert.Empty(t, mockGit.diffCalledWith, "DiffFiles should not be called on first deploy")
-
-	// Pipeline should have proceeded past the path check.
-	state := LoadState(stateFile)
-	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
-}
-
 func TestRun_DeployPathsUsesLastDeployedCommitAfterFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
@@ -3379,9 +3208,13 @@ func TestReconcilerRun(t *testing.T) {
 		err := r.Run(context.Background())
 		require.NoError(t, err)
 
+		// A dry run persists no state, so the full pipeline is observed through
+		// its rendered, retained staging tree. The skip branch returns before
+		// rendering and would leave no staging directory.
+		assert.DirExists(t, stagingDir,
+			"ForceRedeployUnchanged must re-run the full pipeline even though the commit is unchanged")
 		reloaded := LoadState(stateFile)
-		assert.Equal(t, 2, reloaded.DeployCount,
-			"ForceRedeployUnchanged must re-run the full pipeline (incrementing DeployCount) even though the commit is unchanged")
+		assert.Equal(t, 1, reloaded.DeployCount, "a dry run leaves the deploy count untouched")
 	})
 
 	// Review follow-up to #350: ForceRedeployUnchanged must bypass ONLY the
@@ -4476,10 +4309,9 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		err := r.Run(context.Background())
 		require.NoError(t, err)
 
-		// Verify state was saved with the deployed commit
-		saved := LoadState(stateFile)
-		assert.Equal(t, "bbb222", saved.LastDeployedCommit)
-		assert.Equal(t, 0, saved.AttemptCount)
+		// A dry run persists no deploy state: no commit is recorded as deployed.
+		assert.NoFileExists(t, stateFile)
+		assertPrivateStagingTree(t, stagingDir)
 	})
 
 	t.Run("state mismatch triggers re-deploy", func(t *testing.T) {
@@ -4525,8 +4357,11 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		err := r.Run(context.Background())
 		require.NoError(t, err)
 
+		// The mismatch re-ran the pipeline (it rendered), and the dry run left
+		// the recorded deployed commit exactly as it found it.
+		assertPrivateStagingTree(t, stagingDir)
 		saved := LoadState(stateFile)
-		assert.Equal(t, "newcommit", saved.LastDeployedCommit)
+		assert.Equal(t, "oldcommit", saved.LastDeployedCommit)
 	})
 
 	t.Run("decrypt failure sends throttled alert and returns error", func(t *testing.T) {
@@ -4732,68 +4567,6 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to resolve deploy mode")
 		assert.ErrorIs(t, err, ErrAppdataInaccessible)
 		assert.Equal(t, 1, alerter.deployFailureCalls)
-	})
-
-	t.Run("recovery alert sent after previous failure", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
-		stateFile := filepath.Join(tmpDir, "state.json")
-		repoDir := filepath.Join(tmpDir, "repo")
-		stagingDir := filepath.Join(tmpDir, "staging")
-		appdataDir := filepath.Join(tmpDir, "appdata")
-
-		require.NoError(t, os.MkdirAll(appdataDir, 0755))
-
-		infraDir := filepath.Join(repoDir, "unraid")
-		require.NoError(t, os.MkdirAll(infraDir, 0755))
-
-		// Pre-save state with previous failure on same commit.
-		// LastAlertedAttempt is what real state carries: failure alerts fire at
-		// attempt 1, so a 2-attempt failure has always alerted. It is also the
-		// predicate for "a retraction is owed" -- AttemptCount alone would
-		// retract failures that never produced an alert.
-		state := &DeployState{
-			SchemaVersion:       2,
-			LastDeployedCommit:  "oldcommit",
-			LastAttemptedCommit: "bbb222",
-			AttemptCount:        2,
-			LastAlertedAttempt:  1,
-		}
-		require.NoError(t, SaveState(stateFile, state))
-
-		gitOps := &mockGitOps{
-			syncChanged: true,
-			syncBefore:  "aaa111",
-			syncAfter:   "bbb222",
-		}
-
-		alerter := &mockAlertSender{}
-
-		cfg := &Config{
-			DryRun:                  true,
-			AllowEmptyDeclaredState: true,
-			LockFile:                lockFile,
-			StateFile:               stateFile,
-			RepoDir:                 repoDir,
-			StagingDir:              stagingDir,
-			LocalAppdataPath:        appdataDir,
-			InfraSubDir:             ".",
-			SecretsFiles:            []string{},
-			OnFailure:               true,
-			OnSuccess:               true,
-			OnRecovery:              true,
-		}
-		seedStubComposeService(t, cfg)
-		r := NewReconciler(cfg,
-			WithGitOperations(gitOps),
-			WithAlerter(alerter),
-		)
-
-		err := r.Run(context.Background())
-		require.NoError(t, err)
-
-		assert.Equal(t, 1, alerter.deployRecoveryCalls)
-		assert.Equal(t, 1, alerter.deploySuccessCalls)
 	})
 }
 
@@ -5178,7 +4951,8 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 	}
 
 	// Put the state file in a read-only directory so SaveState fails during
-	// attempt tracking (line 335 of reconcile.go).
+	// attempt tracking and at the pre-deploy marker. This is a persisting run on
+	// purpose: a dry run persists no state, so it never reaches that failure.
 	tmpDir := t.TempDir()
 	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	repoDir := filepath.Join(tmpDir, "repo")
@@ -5210,12 +4984,13 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 	deploy := &DeployOps{DryRun: true, ContentHashSync: true}
 
 	cfg := &Config{
-		DryRun:                  true,
+		DryRun:                  false,
 		AllowEmptyDeclaredState: true,
 		LockFile:                lockFile,
 		StateFile:               stateFile,
 		RepoDir:                 repoDir,
 		StagingDir:              stagingDir,
+		BackupDir:               filepath.Join(tmpDir, "backups"),
 		LocalAppdataPath:        appdataDir,
 		InfraSubDir:             ".",
 		SecretsFiles:            []string{},

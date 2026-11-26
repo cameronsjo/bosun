@@ -175,6 +175,17 @@ type RestartTrackingEntry struct {
 	// stability interval. The next unchanged observation of the same container
 	// identity confirms that the interval was clean and permits resolution (#266).
 	StabilityPending bool `json:"stability_pending,omitempty"`
+	// ContainerNumber is the container's Compose container number (1 for
+	// "<project>-web-1"). A replacement of a gone container keeps it, so a new
+	// sibling with another number never inherits this entry. Empty on state
+	// written before it was recorded, and for containers without the label.
+	ContainerNumber string `json:"container_number,omitempty"`
+	// RecoveredSinceAlert records, on every tripped entry of a service, that a
+	// container of the service recovered after the service's trip alert while
+	// another container stayed tripped. When the last tripped entry later goes
+	// away without recovering, this flag is what lets the service be reported
+	// resolved. It is reset when the service trips again.
+	RecoveredSinceAlert bool `json:"recovered_since_alert,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.
@@ -362,22 +373,32 @@ func ShouldAlertDrift(activeItems, alertCandidates []DriftItem, alertedItems map
 		}
 	}
 
+	return alertItems, ResolvedDriftAlertKeys(activeItems, alertedItems)
+}
+
+// ResolvedDriftAlertKeys returns, sorted, the alerted keys whose service has no
+// drift left in activeItems. It is the one definition of "resolved", shared by
+// ShouldAlertDrift and by callers that retire keys without sending a
+// resolution alert (resolution alerts disabled, or no alerter configured).
+//
+// A type transition is not a resolution while the service still has critical
+// drift. The old per-type key is retired only after the replacement alert is
+// delivered successfully.
+func ResolvedDriftAlertKeys(activeItems []DriftItem, alertedItems map[string]time.Time) []string {
 	activeServices := make(map[string]bool, len(activeItems))
 	for _, item := range activeItems {
 		activeServices[item.Service] = true
 	}
 
-	// A type transition is not a resolution while the service still has
-	// critical drift. The old per-type key is retired only after the replacement
-	// alert is delivered successfully.
+	var resolvedKeys []string
 	for key := range alertedItems {
 		service, _, _ := strings.Cut(key, ":")
 		if !activeServices[service] {
 			resolvedKeys = append(resolvedKeys, key)
 		}
 	}
-
-	return alertItems, resolvedKeys
+	sort.Strings(resolvedKeys)
+	return resolvedKeys
 }
 
 // SuppressedDriftAlertKeys returns previously-alerted keys whose service still

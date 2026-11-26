@@ -42,9 +42,10 @@ func ServiceIsPresent(state string, tripped bool) bool {
 // actually started (e.g., the service was added to the compose file in a
 // commit that was already recorded as deployed due to a prior run).
 //
-// restartTracking is the persisted restart-breaker state keyed by service
-// name; a nil map is valid. A tripped entry only matters for a service that
-// still has a container.
+// restartTracking is the persisted restart-breaker state: one entry per
+// container, keyed by the service name or "<service>#<container ID>" (see
+// serviceTripped); a nil map is valid. A tripped entry only matters for a
+// service that still has a container.
 //
 // When declared is empty, returns false — there is nothing to compare against.
 func hasMissingDeclaredServices(declared []DeclaredService, actual []ActualService, restartTracking map[string]RestartTrackingEntry) bool {
@@ -54,7 +55,7 @@ func hasMissingDeclaredServices(declared []DeclaredService, actual []ActualServi
 
 	present := make(map[string]bool, len(actual))
 	for _, svc := range actual {
-		if ServiceIsPresent(svc.State, restartTracking[svc.Name].Tripped) {
+		if ServiceIsPresent(svc.State, serviceTripped(restartTracking, svc.Name)) {
 			present[svc.Name] = true
 		}
 	}

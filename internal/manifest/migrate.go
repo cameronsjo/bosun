@@ -1,9 +1,13 @@
 package manifest
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -38,7 +42,15 @@ type MigrateOptions struct {
 
 // MigrateToV1 adds apiVersion and kind fields to an unversioned manifest.
 // It detects the manifest type based on content and adds appropriate headers.
-// Returns the migrated content and the detected kind.
+// Returns the migrated content and the kind.
+//
+// The result is one YAML document that carries both fields, or an error and no
+// content. A leading document marker stays first with the header after it, a
+// half-versioned file gets only the missing field (an existing non-empty value
+// is kept, an empty one is replaced in place), and a file that holds several
+// documents is rejected. The result is parsed again and compared with the input
+// before it is returned, so a caller that writes it never writes a file that no
+// longer parses or whose body changed.
 func MigrateToV1(data []byte) ([]byte, string, error) {
 	// Check if already versioned
 	versioned, err := IsVersioned(data)
@@ -55,17 +67,238 @@ func MigrateToV1(data []byte) ([]byte, string, error) {
 		return data, kind, nil
 	}
 
+	if err := requireSingleDocument(data); err != nil {
+		return nil, "", err
+	}
+
 	// Detect kind from content
-	kind, err := detectKind(data)
+	detected, err := detectKind(data)
 	if err != nil {
 		return nil, "", fmt.Errorf("detect kind: %w", err)
 	}
 
-	// Add version header
-	header := fmt.Sprintf("apiVersion: %s\nkind: %s\n", APIVersionV1, kind)
-	migrated := header + string(data)
+	migrated, kind, err := addVersionHeader(data, detected)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := verifyMigration(data, migrated); err != nil {
+		return nil, "", err
+	}
 
-	return []byte(migrated), kind, nil
+	return migrated, kind, nil
+}
+
+// requireSingleDocument rejects data that holds more than one YAML document. An
+// empty file holds none and is accepted.
+func requireSingleDocument(data []byte) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	documents := 0
+	for {
+		var doc yaml.Node
+		err := decoder.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("parse manifest: %w", err)
+		}
+		documents++
+		if documents > 1 {
+			return errors.New("file holds more than one YAML document; split it before migrating")
+		}
+	}
+}
+
+// isEmptyYAMLValue reports whether a scalar is null or an empty string, which
+// IsVersioned also treats as absent.
+func isEmptyYAMLValue(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && (node.Tag == "!!null" || node.Value == "")
+}
+
+// leadingMarkerIndex returns the index of a leading "---" line, skipping blank
+// and comment lines before it, or -1 when the document has none. A marker line
+// that carries anything after the dashes is an error: the header cannot be
+// placed after it safely.
+func leadingMarkerIndex(lines []string) (int, error) {
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "---" {
+			return i, nil
+		}
+		if strings.HasPrefix(trimmed, "---") {
+			return -1, errors.New("document marker line carries content; put the content on the next line before migrating")
+		}
+		return -1, nil
+	}
+	return -1, nil
+}
+
+// addVersionHeader returns data with apiVersion and kind present and non-empty,
+// and the kind it carries. detected is the kind inferred from the content, used
+// when the file does not name one.
+func addVersionHeader(data []byte, detected string) ([]byte, string, error) {
+	newline := "\n"
+	if bytes.Contains(data, []byte("\r\n")) {
+		newline = "\r\n"
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, "", fmt.Errorf("parse manifest: %w", err)
+	}
+
+	// Locate the two header keys in the top-level mapping.
+	var apiKey, apiValue, kindKey, kindValue *yaml.Node
+	if len(doc.Content) > 0 {
+		root := doc.Content[0]
+		if root.Kind == yaml.MappingNode {
+			if root.Style&yaml.FlowStyle != 0 {
+				return nil, "", errors.New("top-level mapping is in flow style; rewrite it in block style before migrating")
+			}
+			for i := 0; i+1 < len(root.Content); i += 2 {
+				switch root.Content[i].Value {
+				case "apiVersion":
+					apiKey, apiValue = root.Content[i], root.Content[i+1]
+				case "kind":
+					kindKey, kindValue = root.Content[i], root.Content[i+1]
+				}
+			}
+		}
+	}
+
+	// An existing non-empty apiVersion stays as written, so only the kind needs
+	// resolving here.
+	kind := detected
+	if kindValue != nil && !isEmptyYAMLValue(kindValue) {
+		kind = kindValue.Value
+	}
+
+	// replaceLine rewrites the single line a key and its empty value sit on.
+	replaceLine := func(key, value *yaml.Node, text string) error {
+		if value.Line != key.Line || key.Line < 1 || key.Line > len(lines) {
+			return fmt.Errorf("cannot rewrite %q in place: its value is not on the same line", key.Value)
+		}
+		line := lines[key.Line-1]
+		eol := ""
+		switch {
+		case strings.HasSuffix(line, "\r\n"):
+			eol = "\r\n"
+		case strings.HasSuffix(line, "\n"):
+			eol = "\n"
+		}
+		lines[key.Line-1] = text + eol
+		return nil
+	}
+
+	apiEmpty := apiValue != nil && isEmptyYAMLValue(apiValue)
+	kindEmpty := kindValue != nil && isEmptyYAMLValue(kindValue)
+	apiLine := fmt.Sprintf("apiVersion: %s", APIVersionV1)
+	kindLine := fmt.Sprintf("kind: %s", kind)
+
+	if apiEmpty {
+		if err := replaceLine(apiKey, apiValue, apiLine); err != nil {
+			return nil, "", err
+		}
+	}
+	if kindEmpty {
+		if err := replaceLine(kindKey, kindValue, kindLine); err != nil {
+			return nil, "", err
+		}
+	}
+
+	insert := func(at int, text ...string) {
+		out := make([]string, 0, len(lines)+len(text))
+		out = append(out, lines[:at]...)
+		for _, t := range text {
+			out = append(out, t+newline)
+		}
+		out = append(out, lines[at:]...)
+		lines = out
+	}
+
+	switch {
+	case apiValue == nil && kindValue == nil:
+		// Neither key: the header goes first, or right after a leading marker.
+		at := 0
+		marker, err := leadingMarkerIndex(lines)
+		if err != nil {
+			return nil, "", err
+		}
+		if marker >= 0 {
+			// A marker that is the last line has no line ending yet, and the
+			// header would be glued to it.
+			if !strings.HasSuffix(lines[marker], "\n") {
+				lines[marker] += newline
+			}
+			at = marker + 1
+		}
+		insert(at, apiLine, kindLine)
+	case apiValue == nil:
+		// Only kind: apiVersion goes just before it.
+		insert(kindKey.Line-1, apiLine)
+	case kindValue == nil:
+		// Only apiVersion: kind goes just after it, which needs the line to end.
+		at := apiKey.Line
+		if at > len(lines) {
+			return nil, "", errors.New("cannot find the apiVersion line")
+		}
+		if !strings.HasSuffix(lines[at-1], "\n") {
+			lines[at-1] += newline
+		}
+		insert(at, kindLine)
+	}
+
+	return []byte(strings.Join(lines, "")), kind, nil
+}
+
+// verifyMigration checks the migrated content before it is returned: one
+// document, versioned, and the same fields as the input apart from the two
+// header keys.
+func verifyMigration(original, migrated []byte) error {
+	if err := requireSingleDocument(migrated); err != nil {
+		return fmt.Errorf("migrated content is not one document: %w", err)
+	}
+	versioned, err := IsVersioned(migrated)
+	if err != nil {
+		return fmt.Errorf("migrated content does not parse: %w", err)
+	}
+	if !versioned {
+		return errors.New("migrated content does not carry both apiVersion and kind")
+	}
+
+	before, err := bodyWithoutHeader(original)
+	if err != nil {
+		return err
+	}
+	after, err := bodyWithoutHeader(migrated)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(before, after) {
+		return errors.New("migrated content differs from the input beyond the header")
+	}
+	return nil
+}
+
+// bodyWithoutHeader decodes a manifest and drops apiVersion and kind.
+func bodyWithoutHeader(data []byte) (map[string]any, error) {
+	body := map[string]any{}
+	if err := yaml.Unmarshal(data, &body); err != nil {
+		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+	delete(body, "apiVersion")
+	delete(body, "kind")
+	return body, nil
 }
 
 // detectKind infers the manifest kind from its content.

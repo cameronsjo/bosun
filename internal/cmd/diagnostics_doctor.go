@@ -508,11 +508,13 @@ func checkWebhook() CheckResult {
 // checkTunnel verifies the configured tunnel provider is installed and connected.
 func checkTunnel(ctx context.Context, cfg *config.Config) CheckResult {
 	providerName := "tailscale" // default
+	var providerCfg tunnel.ProviderConfig
 	if cfg != nil {
 		providerName = cfg.TunnelProvider()
+		providerCfg = tunnelProviderConfig(cfg)
 	}
 
-	provider, err := tunnel.NewProvider(providerName)
+	provider, err := tunnel.NewProviderWithConfig(providerName, providerCfg)
 	if err != nil {
 		var notInstalled tunnel.ErrNotInstalled
 		if errors.As(err, &notInstalled) {

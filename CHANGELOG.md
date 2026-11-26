@@ -40,6 +40,83 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.49.13](https://github.com/cameronsjo/bosun/compare/v0.49.12...v0.49.13) (2026-11-26)
+
+
+### Bug Fixes
+
+* **validate:** build the full dry run from the reconcile configuration ([#886](https://github.com/cameronsjo/bosun/issues/886)) ([74cf178](https://github.com/cameronsjo/bosun/commit/74cf17839773ffe10e7ec5754ef4fddbc20a6095))
+
+## [0.49.12](https://github.com/cameronsjo/bosun/compare/v0.49.11...v0.49.12) (2026-11-26)
+
+
+### Bug Fixes
+
+* **migrate:** keep migrated manifests valid and fail on a bad file ([#888](https://github.com/cameronsjo/bosun/issues/888)) ([c7236dc](https://github.com/cameronsjo/bosun/commit/c7236dcb5e0651bff851150ced8a84323aafd4e7))
+
+## [0.49.11](https://github.com/cameronsjo/bosun/compare/v0.49.10...v0.49.11) (2026-11-26)
+
+
+### Bug Fixes
+
+* **daemon:** API write deadline, shutdown logs, bounded reads ([#882](https://github.com/cameronsjo/bosun/issues/882)) ([2e3db6d](https://github.com/cameronsjo/bosun/commit/2e3db6d343a4b3bac2be71178cec8dbbd881828b))
+
+## [0.49.10](https://github.com/cameronsjo/bosun/compare/v0.49.9...v0.49.10) (2026-11-26)
+
+
+### Bug Fixes
+
+* **alert:** resolve alert config in one place ([#884](https://github.com/cameronsjo/bosun/issues/884)) ([bc5c283](https://github.com/cameronsjo/bosun/commit/bc5c2835667a09ec19bd4ebf8bf47390f07205f0))
+
+## [0.49.9](https://github.com/cameronsjo/bosun/compare/v0.49.8...v0.49.9) (2026-11-26)
+
+
+### Bug Fixes
+
+* **upgrade:** keep dynamic config, replace flags, and fail with a non-zero exit ([#883](https://github.com/cameronsjo/bosun/issues/883)) ([83ce6a3](https://github.com/cameronsjo/bosun/commit/83ce6a333325a745c6e0570d1415e033b27ea319))
+
+## [0.49.8](https://github.com/cameronsjo/bosun/compare/v0.49.7...v0.49.8) (2026-11-26)
+
+
+### Bug Fixes
+
+* **daemon:** drift alert state, poll interval, readiness ([#879](https://github.com/cameronsjo/bosun/issues/879)) ([17634ef](https://github.com/cameronsjo/bosun/commit/17634efc32b48fbb33b13e6c5136d5a147d86f71))
+
+## [0.49.7](https://github.com/cameronsjo/bosun/compare/v0.49.6...v0.49.7) (2026-11-26)
+
+
+### Bug Fixes
+
+* **cmd:** wire Cloudflare tunnel config and repair create templates ([#881](https://github.com/cameronsjo/bosun/issues/881)) ([9d9297e](https://github.com/cameronsjo/bosun/commit/9d9297e70929dc57e5c1c243004cf9c3bc12b73d))
+
+## [0.49.6](https://github.com/cameronsjo/bosun/compare/v0.49.5...v0.49.6) (2026-11-25)
+
+
+### Bug Fixes
+
+* **reconcile:** observe one stable container per service; watch every container in the restart breaker ([#856](https://github.com/cameronsjo/bosun/issues/856)) ([6225514](https://github.com/cameronsjo/bosun/commit/62255141233f7ea47f50211c618357cdc817e2af))
+
+## [0.49.5](https://github.com/cameronsjo/bosun/compare/v0.49.4...v0.49.5) (2026-11-25)
+
+
+### Bug Fixes
+
+* **daemon:** the dry-run drift tick observes only ([#862](https://github.com/cameronsjo/bosun/issues/862)) ([6b34634](https://github.com/cameronsjo/bosun/commit/6b3463426ef6ae82b8baa713ab8769469ea54698))
+
+## [0.49.4](https://github.com/cameronsjo/bosun/compare/v0.49.3...v0.49.4) (2026-11-25)
+
+
+### Bug Fixes
+
+* **reconcile:** a dry run persists no deploy state ([#857](https://github.com/cameronsjo/bosun/issues/857)) ([c9da66d](https://github.com/cameronsjo/bosun/commit/c9da66da78d150d0ecb7932db314d0315a04f41b))
+
+## [0.49.3](https://github.com/cameronsjo/bosun/compare/v0.49.2...v0.49.3) (2026-11-25)
+
+
+### Bug Fixes
+
+* **daemon:** stop holding reconcileMu across drift-check I/O ([#852](https://github.com/cameronsjo/bosun/issues/852)) ([4201b60](https://github.com/cameronsjo/bosun/commit/4201b6064bca52562bba767882388c7976a07f9d))
+
 ## [0.49.2](https://github.com/cameronsjo/bosun/compare/v0.49.1...v0.49.2) (2026-11-25)
 
 

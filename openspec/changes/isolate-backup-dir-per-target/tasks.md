@@ -5,7 +5,8 @@
 
 ## 2. Legacy backups
 
-- [x] 2.1 Count legacy `backup-*` directories holding an archive directly under the root and log one warning per run for named targets
+- [x] 2.1 Count legacy `backup-YYYYMMDD-HHMMSS` directories holding an archive directly under the root and log one warning per run for named targets
+- [x] 2.2 Match backups by the exact name `backup-YYYYMMDD-HHMMSS` in the anchor, retention, and legacy scans, and reject a target named that way (`ValidateTargetName`)
 
 ## 3. Tests
 

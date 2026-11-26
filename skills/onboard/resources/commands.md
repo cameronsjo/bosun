@@ -250,6 +250,8 @@ bosun migrate helm --force     # Overwrite existing charts
 | `version` | `--provisions` / `--services` / `--stacks` | | Override the directories to scan |
 | `helm` | `--force` | `false` | Overwrite existing charts |
 
+`migrate version` writes a file only when the result is one YAML document with both `apiVersion` and `kind`. A leading `---` marker stays first with the header after it; a file with only one of the two keys gets only the missing one (an existing value is kept, an empty one is replaced in place). A file it cannot migrate into one valid manifest, such as one holding several YAML documents (a closing `---` after the body starts a second, empty document and counts), a flow-style top level, or a first line that is `---` followed by content, is reported as an error and left unchanged, in dry-run too. It processes every file, then exits non-zero if any reported an error.
+
 ---
 
 ## GitOps Commands
@@ -268,7 +270,7 @@ bosun daemon --poll-interval 0        # Disable polling (webhook-only)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n`, `--dry-run` | `false` | Dry run mode (no actual changes) |
+| `-n`, `--dry-run` | `false` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check only observes: it saves no state, stops no container, triggers no self-heal, and sends no alert |
 | `-p`, `--port` | `8080` | HTTP server port |
 | `-i`, `--poll-interval` | `3600` | Poll interval in seconds (0 = disabled) |
 
@@ -302,7 +304,7 @@ bosun reconcile -n --no-alerts # Dry run that sends no alerts
 | `--target` | Reconcile a single named target (from `targets:` config) |
 | `--no-alerts` | Build no alert manager; send nothing, list no providers |
 
-A dry run alerts exactly like a real run — alert dispatch has no dry-run gate — so pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
+A dry run sends failure, success, and interruption alerts like a real run, but no recovery alert, and it writes no deploy state. Pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
 
 ### `bosun trigger`
 
@@ -423,6 +425,18 @@ circuit-breaker decisions, but writes simulated state only to a temporary copy
 that is removed after validation. It never updates the daemon's configured
 state file.
 
+`validate` builds its configuration the way `bosun reconcile` does, from the same
+environment variables and `bosun.yaml`, so a configuration that `reconcile` refuses
+to start on is reported by `validate`: an invalid hook list, a missing age identity
+for the secrets files, targets that cannot be resolved, and a `BOSUN_TARGETS` that is
+not valid JSON (`reconcile` only warns about that one). The quick check changes
+nothing. `--full` is not read-only: it runs one dry run per target, decrypts secrets
+with your age key and renders into `STAGING_DIR`, leaving the rendered tree there at
+restricted permissions, as `reconcile --dry-run` does; it may delete a leftover
+staging tree it cannot secure, and on a staging directory shared with the daemon it
+replaces the last staging evidence. It runs no pre-deploy or post-sync hooks, sends
+no alerts, and ignores `FORCE`.
+
 ### `bosun breaker`
 
 View and manage the deploy circuit breaker, which stops retrying after 3
@@ -478,7 +492,9 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 | `--compose` | Path to compose file containing Traefik service |
 | `--dynamic` | Path to Traefik dynamic config directory |
 
-**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. Additive only — never removes existing config. Template files (`.tmpl`) get display-only output.
+**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. A recommended flag already present with another value is replaced in place (no duplicate); other flags, and the rest of the dynamic config (routers, services, TLS, other middlewares, comments), are kept. An unparseable dynamic config file is never overwritten. The Traefik service is found by image or by name, so it need not be called `traefik`. Template files (`.tmpl`) get display-only output.
+
+**Exit status:** non-zero when the compose file is missing or has no Traefik service, when a prompt is needed but stdin is not a terminal (use `--yes` or `--dry-run`), or when a fix cannot be applied, including middleware fixes when no dynamic config directory was found (pass one with `--dynamic`). The dynamic config file is written back with two-space indentation.
 
 ---
 
@@ -490,6 +506,8 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 bosun radio test               # Test webhook endpoint (GET /health)
 bosun radio status             # Check Tailscale/tunnel connectivity, peers, network info
 ```
+
+For a Cloudflare tunnel, `radio status` uses `tunnel_name`, `hostname` and `health_endpoint` from the `tunnel:` section of `bosun.yaml`.
 
 ---
 
@@ -593,6 +611,8 @@ Show configured alert providers (Discord, SendGrid, Twilio) with masked credenti
 bosun alert status
 ```
 
+Without a project config it reads the environment alone, with the daemon's names and defaults: `BOSUN_` variables first, then the legacy ones, including sender and recipient settings, and `Alert on failure` and `Alert on recovery` default to yes.
+
 ### `bosun alert test`
 
 Send a test alert to configured providers.
@@ -609,6 +629,8 @@ bosun alert test -s error              # Set severity (info/warning/error)
 | `-p`, `--provider` | Test specific provider (discord, sendgrid, twilio) |
 | `-m`, `--message` | Custom test message |
 | `-s`, `--severity` | Alert severity (info, warning, error) |
+
+Without a project config it falls back to the environment alone, resolved like `bosun alert status`: `BOSUN_` variables first, then the legacy ones, including the sender and recipient settings a SendGrid or Twilio test needs.
 
 ---
 

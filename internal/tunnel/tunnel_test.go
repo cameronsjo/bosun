@@ -1,11 +1,66 @@
 package tunnel
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// stubCloudflaredOnPath installs an executable cloudflared as the only entry
+// on PATH, so exec.LookPath finds it without a real install.
+func stubCloudflaredOnPath(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("stub cloudflared is a POSIX shell script")
+	}
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cloudflared"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", dir)
+}
+
+func TestNewProviderWithConfig_CloudflareCarriesSettings(t *testing.T) {
+	stubCloudflaredOnPath(t)
+
+	provider, err := NewProviderWithConfig("cloudflare", ProviderConfig{
+		TunnelName:     "my-tunnel",
+		Hostname:       "tunnel.example.com",
+		HealthEndpoint: "http://127.0.0.1:8080/health",
+	})
+	require.NoError(t, err)
+
+	cf, ok := provider.(*Cloudflare)
+	require.True(t, ok, "expected *Cloudflare, got %T", provider)
+	assert.Equal(t, "tunnel.example.com", cf.GetHostname())
+	assert.Equal(t, CloudflareConfig{
+		TunnelName:     "my-tunnel",
+		Hostname:       "tunnel.example.com",
+		HealthEndpoint: "http://127.0.0.1:8080/health",
+		HealthTimeout:  DefaultHealthTimeout,
+	}, cf.config)
+}
+
+func TestNewProvider_CloudflareHasNoSettings(t *testing.T) {
+	stubCloudflaredOnPath(t)
+
+	provider, err := NewProvider("cloudflare")
+	require.NoError(t, err)
+
+	cf, ok := provider.(*Cloudflare)
+	require.True(t, ok, "expected *Cloudflare, got %T", provider)
+	assert.Equal(t, CloudflareConfig{HealthTimeout: DefaultHealthTimeout}, cf.config)
+}
+
+func TestNewProviderWithConfig_UnknownProvider(t *testing.T) {
+	provider, err := NewProviderWithConfig("unknown", ProviderConfig{Hostname: "tunnel.example.com"})
+	assert.Nil(t, provider)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown tunnel provider")
+}
 
 func TestProviderType_Constants(t *testing.T) {
 	assert.Equal(t, ProviderType("tailscale"), ProviderTailscale)

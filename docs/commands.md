@@ -290,6 +290,8 @@ bosun migrate helm --force     # Overwrite existing charts
 | `version` | `--provisions` / `--services` / `--stacks` | Override directories to scan |
 | `helm` | `--force` | Overwrite existing charts |
 
+`migrate version` writes a file only when the result is one YAML document with both `apiVersion` and `kind`. A leading `---` marker stays first with the header after it; a file with only one of the two keys gets only the missing one (an existing value is kept, an empty one is replaced in place). A file it cannot migrate into one valid manifest, such as one holding several YAML documents (a closing `---` after the body starts a second, empty document and counts), a flow-style top level, or a first line that is `---` followed by content, is reported as an error and left unchanged, in dry-run too. It processes every file, then exits non-zero if any reported an error.
+
 ## Radio Commands
 
 Communication and connectivity commands.
@@ -318,6 +320,8 @@ Displays:
 - This device info (hostname, IP, DNS)
 - Network info (tailnet, peer count)
 - Online peers
+
+For a Cloudflare tunnel, the `tunnel_name`, `hostname` and `health_endpoint` keys in the `tunnel:` section of `bosun.yaml` decide how the status is read: `cloudflared tunnel info` when `tunnel_name` is set, otherwise a request to `health_endpoint`, otherwise a check for a running `cloudflared` process. `bosun doctor` reads the same keys.
 
 ## Diagnostics Commands
 
@@ -387,11 +391,11 @@ bosun drift --target=nas       # Show drift for a specific target
 
 | Type | Severity | Description |
 |------|----------|-------------|
-| `missing` | Critical | Declared service is not running (or exited) |
+| `missing` | Critical | The service's observed container is not running or restarting (e.g., exited); see Container matching below |
 | `unhealthy` | Critical | Service is running but health check is failing |
 | `image_mismatch` | Warning | Running image differs from declared image |
 
-**Container matching:** Uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels.
+**Container matching:** Uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels. A service with several containers is observed through one: a running or restarting container wins over a stopped one, then the oldest, then the smallest container ID (health never changes the pick). The restart breaker watches every running or restarting container of a service, not only the observed one.
 
 **Target state resolution:** With one configured named target and no `--target`, drift reads that target's daemon-written state file (for example, `deploy-state-nas.json`). With multiple targets, it reports every target. When targets are configured, an unknown `--target` is an error instead of probing an arbitrary state filename. An explicit `--state-file` always reads exactly that path, but does not make an unknown configured target valid.
 
@@ -511,6 +515,10 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 
 **Template safety:** If the compose file is a Go template (`.tmpl` extension or contains `{{`), fixes are displayed but not auto-applied.
 
+**What a fix changes:** a recommended flag that is already present with another value is replaced in place (no duplicate setting); other flags are kept. Middlewares are added to the dynamic config file as a YAML edit, so routers, services, TLS options, other middlewares and comments stay; the file is written back with two-space indentation, so a hand-indented file is re-indented. A file that cannot be parsed is not overwritten and is reported as an error. When fixes need a dynamic config directory and none was found, they are printed and the command exits non-zero; pass the directory with `--dynamic`.
+
+**Exit status:** non-zero when the compose file is missing or has no Traefik service, when a prompt is needed but stdin is not a terminal (use `--yes` or `--dry-run`), or when a fix cannot be applied. `--dry-run` and a declined prompt exit 0.
+
 ## Emergency Commands
 
 ### mayday
@@ -579,7 +587,7 @@ bosun daemon -i 1800
 
 | Flag | Description |
 |------|-------------|
-| `-n`, `--dry-run` | Dry run mode (no actual changes) |
+| `-n`, `--dry-run` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check only observes: it saves no state, stops no container, triggers no self-heal, and sends no alert |
 | `-p`, `--port` | HTTP server port (default: 8080) |
 | `-i`, `--poll-interval` | Poll interval in seconds (default: 3600, 0 disables) |
 
@@ -686,6 +694,23 @@ The `--full` dry-run reads the configured deploy state to make the same skip
 and circuit-breaker decisions as reconciliation, but writes simulated state to
 a temporary copy that is removed when validation exits. It never updates the
 daemon's configured state file.
+
+`validate` builds its reconciler configuration the way `bosun reconcile` does: the
+same environment variables (`REPO_DIR`, `STAGING_DIR`, `BOSUN_INFRA_DIR`,
+`BOSUN_SECRETS_FILE`, `BOSUN_STATE_DIR`, `BOSUN_TARGETS` and the rest) and the same
+`bosun.yaml`, so a configuration that `reconcile` refuses to start on is reported
+by `validate`: an invalid hook list, a missing age identity for the secrets files,
+targets that cannot be resolved (a reserved `default` name, nested staging paths,
+colliding resources), and a `BOSUN_TARGETS` that is not valid JSON (`reconcile`
+only logs a warning for that one and runs the default target).
+
+The quick check changes nothing. `--full` is not read-only: it runs one dry run per
+target, and like `reconcile --dry-run` it decrypts secrets with your age key and
+renders into the staging directory. It leaves the rendered tree there secured at
+restricted permissions, may delete a leftover staging tree it cannot secure, and on
+a staging directory shared with the daemon replaces the last staging evidence. It
+differs from `reconcile --dry-run` in three ways: it runs no pre-deploy or
+post-sync hooks, it sends no alerts, and it ignores `FORCE`.
 
 **Checks:**
 
@@ -817,7 +842,9 @@ bosun reconcile --target=nas
 `--no-alerts` builds the reconciler with no alert manager, so no success,
 failure, interruption, unhealthy or recovery alert is sent, and configured
 providers are not listed. `--dry-run` does **not** imply it: a failing dry run
-alerts exactly like a failing real run unless you pass `--no-alerts` too.
+alerts exactly like a failing real run unless you pass `--no-alerts` too. A dry
+run sends no recovery alert, because it writes no deploy state and so cannot
+record that a retraction was delivered.
 
 **Workflow:**
 
