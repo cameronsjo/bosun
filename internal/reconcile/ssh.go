@@ -1335,7 +1335,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 	// Ensure target directory exists on remote
 	targetDir := path.Dir(targetFile)
 	if err := d.EnsureRemoteDir(ctx, targetHost, targetDir); err != nil {
-		return fmt.Errorf("ensure remote dir: %w", err)
+		return fmt.Errorf("ensure remote deploy directory %q: %w", targetDir, err)
 	}
 
 	err = retryWithBackoff(ctx, DefaultMaxRetries, func() error {
