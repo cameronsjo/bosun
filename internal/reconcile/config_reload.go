@@ -14,8 +14,17 @@ import (
 // critical containers, drift ignore rules, remove-orphans) if the file changed.
 // Fields overridden by environment variables are not updated.
 func (r *Reconciler) reloadProjectConfig() error {
+	_, err := r.reloadProjectConfigChanged()
+	return err
+}
+
+// reloadProjectConfigChanged is reloadProjectConfig plus a report of whether the
+// reload changed any effective value. The flag drives the "Reloaded project
+// config from repo" log line, so a reload that finds the repo unchanged stays
+// quiet.
+func (r *Reconciler) reloadProjectConfigChanged() (bool, error) {
 	if r.config.ConfigReloader == nil {
-		return nil
+		return false, nil
 	}
 
 	logger := log.Component(log.ComponentReconcile) // No ctx available in this method.
@@ -32,7 +41,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 				Str("hooks_outcome", "rejected").
 				Str("hooks_source", "file").
 				Msg("Reloaded post-sync hooks are invalid, aborting reconciliation")
-			return err
+			return false, err
 		}
 		if errors.Is(err, ErrInvalidPreDeployHooks) {
 			// A broken gate must not be skipped or silently replaced by the
@@ -41,20 +50,20 @@ func (r *Reconciler) reloadProjectConfig() error {
 				Err(err).
 				Str("pre_deploy_hooks_outcome", "rejected").
 				Msg("Reloaded pre-deploy hooks are invalid, aborting reconciliation")
-			return err
+			return false, err
 		}
 		logger.Warn().
 			Str("hooks_outcome", "retained").
 			Str("hooks_source", configSourceName(r.config.PostSyncHooks.Source)).
 			Msg("Failed to reload project config from repo, keeping existing config; error detail redacted")
-		return nil
+		return false, nil
 	}
 	if reloaded == nil {
 		logger.Debug().
 			Str("hooks_outcome", "retained").
 			Str("hooks_source", configSourceName(r.config.PostSyncHooks.Source)).
 			Msg("No project config snapshot available; keeping existing hook config")
-		return nil
+		return false, nil
 	}
 
 	if err := ValidatePostSyncHooks(reloaded.PostSyncHooks); err != nil {
@@ -63,7 +72,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 			Str("hooks_outcome", "rejected").
 			Str("hooks_source", "file").
 			Msg("Reloaded root post-sync hooks are invalid, aborting reconciliation")
-		return err
+		return false, err
 	}
 	for _, target := range reloaded.Targets {
 		if err := ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
@@ -74,7 +83,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 				Str("hooks_source", "file").
 				Str("target", target.Name).
 				Msg("Reloaded target post-sync hooks are invalid, aborting reconciliation")
-			return targetErr
+			return false, targetErr
 		}
 	}
 	if err := ValidatePreDeployHooks(reloaded.PreDeployHooks); err != nil {
@@ -82,7 +91,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 			Err(err).
 			Str("pre_deploy_hooks_outcome", "rejected").
 			Msg("Reloaded root pre-deploy hooks are invalid, aborting reconciliation")
-		return err
+		return false, err
 	}
 	for _, target := range reloaded.Targets {
 		if err := ValidatePreDeployHooks(target.PreDeployHooks); err != nil {
@@ -92,14 +101,14 @@ func (r *Reconciler) reloadProjectConfig() error {
 				Str("pre_deploy_hooks_outcome", "rejected").
 				Str("target", target.Name).
 				Msg("Reloaded target pre-deploy hooks are invalid, aborting reconciliation")
-			return targetErr
+			return false, targetErr
 		}
 	}
 	if offender := multiTargetDefaultName(reloaded.Targets); offender != "" {
 		logger.Warn().
 			Str("target", offender).
 			Msg("Reloaded config declares a reserved default-named target in a multi-target list; rejecting snapshot and keeping existing config (#391)")
-		return nil
+		return false, nil
 	}
 
 	changed := false
@@ -288,7 +297,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 			Bool("remove_orphans", r.config.RemoveOrphans.Value).
 			Msg("Reloaded project config from repo")
 	}
-	return nil
+	return changed, nil
 }
 
 // applyTargetOverrides overlays per-target field overrides onto the reconciler's config.
