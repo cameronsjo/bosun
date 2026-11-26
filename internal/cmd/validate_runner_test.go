@@ -115,6 +115,12 @@ func TestRunFullDryRunWith_RunsEachTargetWithTheReconcileConfig(t *testing.T) {
 	t.Setenv("BOSUN_TARGETS", validateTwoTargets)
 	t.Setenv("DEPLOY_TARGET", "")
 	t.Setenv("FORCE", "true")
+	// An alert provider is configured, so reconcilerOptionsForCLI would hand a
+	// reconciler an alerter. Without one it returns no options at all and the
+	// zero-options assertion below could not tell a validation that attaches the
+	// CLI options from one that attaches none (the staged break showed this).
+	t.Setenv("BOSUN_DISCORD_WEBHOOK_URL", "https://discord.invalid/api/webhooks/1/token")
+	require.NotEmpty(t, reconcilerOptionsForCLI(), "the premise of the zero-options assertion")
 	chdirValidateProject(t, validateHookProjectYAML)
 
 	var runs []recordedValidateRun
