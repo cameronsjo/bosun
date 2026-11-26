@@ -869,7 +869,7 @@ record that a retraction was delivered.
 | `BOSUN_GIT_TOKEN` | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` | Unset |
 | `REPO_DIR` | Local repo directory | `/app/repo` |
 | `STAGING_DIR` | Staging directory | `/app/staging` |
-| `BACKUP_DIR` | Backup directory | `/app/backups` |
+| `BACKUP_DIR` | Backup directory; named targets use `<dir>/<target>` | `/app/backups` |
 | `LOG_DIR` | Log directory | `/app/logs` |
 | `LOCAL_APPDATA` | Local appdata path | `/mnt/appdata` |
 | `REMOTE_APPDATA` | Remote appdata path | `/mnt/user/appdata` |

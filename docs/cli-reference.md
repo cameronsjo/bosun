@@ -1357,7 +1357,7 @@ The backup name must be a `backup-*` directory shown by `--list`, and its `confi
 
 | Variable | Description |
 |----------|-------------|
-| `BACKUP_DIR` | Custom backup directory location |
+| `BACKUP_DIR` | Custom backup directory location. A named target in a multi-target deployment backs up under `<dir>/<target>`, so point this at that directory to list or restore its backups |
 | `LOCAL_APPDATA` | Local appdata path for restore target |
 
 **Examples:**
@@ -1424,7 +1424,7 @@ Executes the complete GitOps reconciliation workflow:
 | `SECRETS_FILES` | `""` | Comma-separated list of SOPS secret files |
 | `REPO_DIR` | `/app/repo` | Local repo directory |
 | `STAGING_DIR` | `/app/staging` | Staging directory |
-| `BACKUP_DIR` | `/app/backups` | Backup directory |
+| `BACKUP_DIR` | `/app/backups` | Backup directory; named targets use `<dir>/<target>` |
 | `LOG_DIR` | `/app/logs` | Log directory |
 | `LOCAL_APPDATA` | `/mnt/appdata` | Local appdata path |
 | `REMOTE_APPDATA` | `/mnt/user/appdata` | Remote appdata path |

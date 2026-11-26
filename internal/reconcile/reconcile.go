@@ -70,6 +70,10 @@ type Config struct {
 	StagingDir string
 	// BackupDir is the directory for configuration backups.
 	BackupDir string
+	// BackupRoot is the shared parent of every named target's BackupDir. Set by
+	// ConfigForTarget for named targets; empty means BackupDir is the root. The
+	// archive excludes it so a target never archives a sibling's backups (#791).
+	BackupRoot string
 	// LogDir is the directory for log files.
 	LogDir string
 	// LockFile is the path to the reconciliation lock file.
@@ -2193,6 +2197,12 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Named targets back up under <root>/<name>; anything an earlier release left
+	// directly under the root is never used, so say so once per run (#791).
+	if r.config.BackupRoot != "" {
+		warnLegacySharedBackups(ctx, r.config.BackupRoot)
+	}
+
 	// Discover targets from staging to know what to back up.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
@@ -2232,13 +2242,20 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 		}
 	}
 
+	// The archive excludes the shared root, not just this target's directory, so
+	// a full-appdata fallback never swallows a sibling target's backups (#791).
+	excludeRoot := r.config.BackupRoot
+	if excludeRoot == "" {
+		excludeRoot = r.config.BackupDir
+	}
+
 	if local {
 		logger.Debug().Int("path_count", len(paths)).Msg("Creating local backup")
-		backupName, err = r.deploy.Backup(ctx, r.config.BackupDir, paths)
+		backupName, err = r.deploy.backupExcluding(ctx, excludeRoot, r.config.BackupDir, paths)
 	} else {
 		host := r.getTargetHost(secrets)
 		logger.Debug().Str(log.FieldTarget, host).Int("path_count", len(paths)).Msg("Creating remote backup")
-		backupName, err = r.deploy.BackupRemote(ctx, host, r.config.BackupDir, paths)
+		backupName, err = r.deploy.backupRemoteExcluding(ctx, host, excludeRoot, r.config.BackupDir, paths)
 	}
 
 	if err != nil {

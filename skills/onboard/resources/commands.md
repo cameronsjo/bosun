@@ -643,13 +643,14 @@ Restore infrastructure configs from a backup created during reconciliation.
 ```bash
 bosun restore -l                        # List available backups
 bosun restore backup-20240115-143022    # Restore a specific backup
+BACKUP_DIR=/app/backups/unraid bosun restore -l   # A named target's backups
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-l`, `--list` | List available backups |
 
-A backup name is required; there is no "restore latest" default. The name must be a `backup-*` directory shown by `--list`, and its `configs.tar.gz` must be a regular file inside the backup directory. Symlinked backup directories and archives are refused.
+A backup name is required; there is no "restore latest" default. The name must be a `backup-*` directory shown by `--list`, and its `configs.tar.gz` must be a regular file inside the backup directory. Symlinked backup directories and archives are refused. In a multi-target deployment each named target backs up under `<BACKUP_DIR>/<target>`, so set `BACKUP_DIR` to that directory to list or restore its backups; `restore` has no `--target` flag.
 
 After restoring, automatically runs `docker compose up -d` if a compose file is present.
 
