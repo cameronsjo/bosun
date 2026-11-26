@@ -694,7 +694,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// from a previously failed deploy are still considered deploy-relevant.
 	// When there is no prior successful deploy, skip this check entirely —
 	// everything is deploy-relevant on first run.
-	if len(r.config.DeployPaths.Value) > 0 && changed && !r.config.Force && state.LastDeployedCommit != "" {
+	// A pending redeploy bypasses the check too: the failed deploy synced files
+	// that LastDeployedCommit does not describe, so a later commit that reverts
+	// its changes shows no deploy-relevant path while those files are still on
+	// disk. Skipping would clear the marker and strand them.
+	if len(r.config.DeployPaths.Value) > 0 && changed && !r.config.Force && !state.NeedsRedeploy && state.LastDeployedCommit != "" {
 		changedFiles, err := r.git.DiffFiles(ctx, state.LastDeployedCommit, after)
 		if err != nil {
 			if errors.Is(err, ErrCommitUnavailable) {

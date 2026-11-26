@@ -3,6 +3,7 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -161,17 +162,21 @@ func (r *Reconciler) reloadProjectConfigChanged() (bool, error) {
 	// passed validation above. Assign owned slices so concurrent target
 	// reconcilers cannot alias the loader or one another.
 	if !r.config.PostSyncHooks.FromEnv() {
+		if !postSyncHooksEqual(r.config.PostSyncHooks.Value, preparedHooks) {
+			changed = true
+		}
 		r.config.PostSyncHooks = ConfigField[[]PostSyncHook]{
 			Value:  preparedHooks,
 			Source: preparedHookSource,
 		}
-		changed = true
 	}
 	delayOutcome := "retained"
 	if !r.config.HookSettleDelay.FromEnv() && reloaded.HookSettleDelay != nil {
+		if r.config.HookSettleDelay.Value != *reloaded.HookSettleDelay {
+			changed = true
+		}
 		r.config.HookSettleDelay.SetFromFile(*reloaded.HookSettleDelay)
 		delayOutcome = "applied"
-		changed = true
 	}
 	logger.Debug().
 		Str("hooks_outcome", hooksOutcome).
@@ -228,26 +233,26 @@ func (r *Reconciler) reloadProjectConfigChanged() (bool, error) {
 	// added, they need reloadField's FromEnv handling the way RemoveOrphans
 	// does below.
 	if reloaded.OnFailure != nil {
+		changed = changed || r.config.OnFailure != *reloaded.OnFailure
 		r.config.OnFailure = *reloaded.OnFailure
-		changed = true
 	}
 
 	if reloaded.OnSuccess != nil {
+		changed = changed || r.config.OnSuccess != *reloaded.OnSuccess
 		r.config.OnSuccess = *reloaded.OnSuccess
-		changed = true
 	}
 
 	if reloaded.OnRecovery != nil {
+		changed = changed || r.config.OnRecovery != *reloaded.OnRecovery
 		r.config.OnRecovery = *reloaded.OnRecovery
-		changed = true
 	}
 
 	if reloaded.RemoveOrphans != nil {
-		if reloadField(&r.config.RemoveOrphans, *reloaded.RemoveOrphans, func(v bool) bool { return true }) {
-			if r.deploy != nil {
-				r.deploy.RemoveOrphans = r.config.RemoveOrphans.Value
-			}
-			changed = true
+		changed = reloadField(&r.config.RemoveOrphans, *reloaded.RemoveOrphans, func(v bool) bool { return true }) || changed
+		// The live deploy ops hold their own copy, so push the effective value
+		// even when it did not change, unless the environment owns the field.
+		if r.deploy != nil && !r.config.RemoveOrphans.FromEnv() {
+			r.deploy.RemoveOrphans = r.config.RemoveOrphans.Value
 		}
 	}
 
@@ -336,6 +341,15 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	}
 
 	return changed
+}
+
+// postSyncHooksEqual reports whether two hook lists hold the same hooks. Nil and
+// empty are the same list: an absent key and an explicit [] both mean no hooks.
+func postSyncHooksEqual(a, b []PostSyncHook) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 func matchingReloadTarget(targetName string, targets []Target) (Target, bool) {

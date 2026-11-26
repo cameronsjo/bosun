@@ -37,7 +37,10 @@ func isPropagatedCallerCancellation(ctx context.Context, err error) bool {
 
 func (r *Reconciler) finalizeAttempt(ctx context.Context, runErr error, snapshot *attemptBudgetSnapshot) {
 	recoverySent := r.recoverySentThisRun
-	r.recoverySentThisRun = false
+	// The flag is scoped to one run. Clear it on every exit, including after the
+	// interruption recovery sent below, which sets it again: left set, it would
+	// make the next run on this Reconciler skip a recovery it owes.
+	defer func() { r.recoverySentThisRun = false }()
 	if snapshot == nil {
 		return
 	}
