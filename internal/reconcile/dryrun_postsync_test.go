@@ -23,6 +23,10 @@ import (
 // returns before any SSH contact.
 func TestRun_DryRun_RunsNoPostSyncHooks(t *testing.T) {
 	h := newRunHarness(t, true)
+	// A previous deploy: with none, post-sync hooks are skipped as a "first
+	// deploy" whether or not the dry-run guard exists, and the staged break (the
+	// guard removed) could not turn this test red.
+	h.seed(t, &DeployState{LastDeployedCommit: "prevcommit"})
 	h.cfg.DeployMode = "remote"
 	h.cfg.TargetHost = "root@192.0.2.1"
 	h.cfg.RemoteAppdataPath = "/mnt/user/appdata"
