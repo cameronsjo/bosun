@@ -94,4 +94,28 @@ func TestMigrateVersionCmd_ExitStatus(t *testing.T) {
 
 		assert.NoError(t, err)
 	})
+
+	t.Run("a services path that is a file fails the command", func(t *testing.T) {
+		chdirMigrateProject(t)
+		notADirectory := filepath.Join(t.TempDir(), "services")
+		require.NoError(t, os.WriteFile(notADirectory, []byte("not a directory"), 0o644))
+
+		_, err := executeCmd(t, "migrate", "version", "--help=false", "--services", notADirectory)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "migrate manifests")
+	})
+
+	t.Run("no project to read the manifest directories from fails the command", func(t *testing.T) {
+		emptyDir := evalSymlinks(t, t.TempDir())
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+		require.NoError(t, os.Chdir(emptyDir))
+
+		_, err = executeCmd(t, "migrate", "version", "--help=false")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "load config")
+	})
 }
