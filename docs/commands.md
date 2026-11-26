@@ -511,6 +511,10 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 
 **Template safety:** If the compose file is a Go template (`.tmpl` extension or contains `{{`), fixes are displayed but not auto-applied.
 
+**What a fix changes:** a recommended flag that is already present with another value is replaced in place (no duplicate setting); other flags are kept. Middlewares are added to the dynamic config file as a YAML edit, so routers, services, TLS options, other middlewares and comments stay. A file that cannot be parsed is not overwritten and is reported as an error.
+
+**Exit status:** non-zero when the compose file is missing or has no Traefik service, when a prompt is needed but stdin is not a terminal (use `--yes` or `--dry-run`), or when a fix cannot be applied. `--dry-run` and a declined prompt exit 0.
+
 ## Emergency Commands
 
 ### mayday

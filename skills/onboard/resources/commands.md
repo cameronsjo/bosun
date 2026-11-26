@@ -478,7 +478,9 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 | `--compose` | Path to compose file containing Traefik service |
 | `--dynamic` | Path to Traefik dynamic config directory |
 
-**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. Additive only — never removes existing config. Template files (`.tmpl`) get display-only output.
+**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. A recommended flag already present with another value is replaced in place (no duplicate); other flags, and the rest of the dynamic config (routers, services, TLS, other middlewares, comments), are kept. An unparseable dynamic config file is never overwritten. The Traefik service is found by image or by name, so it need not be called `traefik`. Template files (`.tmpl`) get display-only output.
+
+**Exit status:** non-zero when the compose file is missing or has no Traefik service, when a prompt is needed but stdin is not a terminal (use `--yes` or `--dry-run`), or when a fix cannot be applied.
 
 ---
 
