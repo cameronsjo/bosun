@@ -450,6 +450,8 @@ tunnel:
   health_endpoint: https://bosun.example.com/health
 ```
 
+`bosun radio status` and `bosun doctor` pass these three keys to the Cloudflare provider. With `tunnel_name` set, the status comes from `cloudflared tunnel info` (falling back to `health_endpoint` if that command fails); otherwise `health_endpoint` is requested and a `200` counts as connected; with neither, bosun looks for a running `cloudflared` process. `hostname` is the name shown in the status output.
+
 ## Alert Configuration
 
 Bosun can notify you when deployments succeed or fail.
