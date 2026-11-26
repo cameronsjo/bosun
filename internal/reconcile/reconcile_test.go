@@ -1139,11 +1139,12 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 			},
 		},
 		{
-			name: "stale redeploy and failure state",
+			// A pending redeploy is covered by
+			// TestRun_DeployPathsNeedsRedeployForcesPipeline: it bypasses this gate.
+			name: "stale failure state",
 			seedState: &DeployState{
 				LastDeployedCommit:  "aaa111",
 				DeployCount:         7,
-				NeedsRedeploy:       true,
 				LastAttemptedCommit: "bbb222",
 				AttemptCount:        MaxAttempts,
 				LastAlertedAttempt:  MaxAttempts,

@@ -571,6 +571,30 @@ func TestFinalizeAttempt_CleanRunAfterInterruptionSendsOneRecovery(t *testing.T)
 	assert.Equal(t, 1, alerter.deployRecoveryCalls)
 }
 
+// The flag that suppresses a duplicate recovery is scoped to one run. A recovery
+// finalizeAttempt sends itself must not leave it set, or the next run on the
+// same Reconciler skips an interruption recovery it owes.
+func TestFinalizeAttempt_RecoverySentFlagDoesNotLeakIntoNextRun(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: true}, WithAlerter(alerter))
+	r.lastCommit = "new"
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	require.Equal(t, 1, alerter.interruptionRecoveryCalls)
+	assert.False(t, r.recoverySentThisRun, "the flag is cleared when the run that set it finalizes")
+
+	// A second interruption is delivered and retracted. The snapshot is built
+	// from freshly loaded state, because the first call used its own.
+	require.NoError(t, SaveState(stateFile, &DeployState{
+		LastAttemptOutcome: &LastAttemptOutcome{Outcome: attemptOutcomeInterrupted, Commit: "newer", Timestamp: time.Now(), Alerted: true},
+	}))
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "newer"))
+
+	assert.Equal(t, 2, alerter.interruptionRecoveryCalls, "the second interruption still owes its recovery")
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+}
+
 func TestFinalizeAttempt_RecoveryGatedOnOnRecovery(t *testing.T) {
 	stateFile, state := interruptedState(t)
 	alerter := &mockAlertSender{}
