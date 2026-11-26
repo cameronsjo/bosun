@@ -474,7 +474,7 @@ flowchart TD
 | SSH connect | 5 seconds | `SSHConnectTimeout` |
 | SSH operations | 30 seconds | `SSHTimeout` |
 | File sync | 5 minutes | `FileSyncTimeout` |
-| Docker compose up (per compose file) | 10 minutes (configurable via `BOSUN_COMPOSE_UP_TIMEOUT`) | `DefaultComposeUpTimeout` |
+| Docker compose up (per compose file; remote compose up and remote rollback per call) | 10 minutes (configurable via `BOSUN_COMPOSE_UP_TIMEOUT`) | `DefaultComposeUpTimeout` |
 | Reconcile cycle budget (daemon; paused during compose up) | 10 minutes (configurable via `BOSUN_RECONCILE_TIMEOUT`) | `Config.ReconcileTimeout` |
 | Reconcile cycle hard cap (daemon; compose up included) | 30 minutes (configurable via `BOSUN_RECONCILE_MAX_TIMEOUT`) | `DefaultReconcileMaxTimeout` |
 | Rollback grace: extraction and rollbacks end by the cap's deadline plus this (daemon) | 5 minutes (configurable via `BOSUN_RECONCILE_ROLLBACK_GRACE`) | `DefaultReconcileRollbackGrace` |

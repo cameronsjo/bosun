@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/deadline"
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
@@ -47,13 +48,21 @@ func (d *DeployOps) RollbackRemoteCompose(ctx context.Context, host, remoteCompo
 		return failed(errors.New("no backup anchor available for rollback"))
 	}
 
+	// The compose-up failure being recovered from is often the caller's ctx
+	// ending (cycle timeout, shutdown). Like the local RollbackFromBackupSet,
+	// run the restore on a context that keeps ctx's values but not its
+	// cancellation, bounded by ComposeUpTimeout and the cycle cap plus the
+	// rollback grace (#727, #802).
+	rbCtx, cancel := deadline.CleanupContext(ctx, d.composeUpTimeout())
+	defer cancel()
+
 	// Interim stale-anchor observability (#340): surface the anchor's age before
 	// restoring. Full freshness gating lands in a later PR; here we only log it.
-	logBackupAnchorAge(ctx, backupPath)
+	logBackupAnchorAge(rbCtx, backupPath)
 
 	// The anchor must be trustworthy before we restore from it (truncation and
 	// decompression-bomb bounds).
-	if err := d.VerifyBackup(ctx, backupPath); err != nil {
+	if err := d.VerifyBackup(rbCtx, backupPath); err != nil {
 		return failed(fmt.Errorf("backup anchor failed verification: %w", err))
 	}
 
@@ -65,7 +74,7 @@ func (d *DeployOps) RollbackRemoteCompose(ctx context.Context, host, remoteCompo
 	// the classic "symlink to /etc/cron.d then write a file through it" escape
 	// cannot land on the root-owned remote FS after the re-push (#448).
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
-	root, cleanup, err := safeExtractBackup(ctx, tarFile)
+	root, cleanup, err := safeExtractBackup(rbCtx, tarFile)
 	if err != nil {
 		return failed(fmt.Errorf("extract backup archive: %w", err))
 	}
@@ -86,14 +95,14 @@ func (d *DeployOps) RollbackRemoteCompose(ctx context.Context, host, remoteCompo
 
 	// Re-push through the SAME hardened remote deploy path so the transfer
 	// integrity checks (#252, #334) apply to the restored tree too.
-	if err := d.DeployRemote(ctx, restoredComposeDir, host, remoteComposeDir); err != nil {
+	if err := d.DeployRemote(rbCtx, restoredComposeDir, host, remoteComposeDir); err != nil {
 		return failed(fmt.Errorf("re-deploy restored compose dir: %w", err))
 	}
 
 	// Bring the restored compose dir back up. Unhealthy-only is acceptable here:
 	// the previous config is restored, so an unhealthy container is a pre-existing
 	// condition rather than a rollback failure.
-	if err := d.ComposeUpRemote(ctx, host, remoteComposeDir); err != nil && !errors.Is(err, ErrComposeUnhealthy) {
+	if err := d.ComposeUpRemote(rbCtx, host, remoteComposeDir); err != nil && !errors.Is(err, ErrComposeUnhealthy) {
 		return failed(fmt.Errorf("compose up after restore: %w", err))
 	}
 
