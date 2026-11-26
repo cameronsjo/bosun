@@ -330,5 +330,31 @@ func makeStatsJSON(cpuTotal, cpuSystem, preCPUTotal, preSystem, memUsage, memLim
 	return data
 }
 
+// makeStatsJSONCgroupV2 creates stats JSON as a cgroup v2 host reports it:
+// online_cpus is set and cpu_usage carries no percpu_usage list.
+func makeStatsJSONCgroupV2(cpuTotal, cpuSystem, preCPUTotal, preSystem, memUsage, memLimit uint64, onlineCPUs uint32) []byte {
+	stats := map[string]any{
+		"cpu_stats": map[string]any{
+			"cpu_usage": map[string]any{
+				"total_usage": cpuTotal,
+			},
+			"system_cpu_usage": cpuSystem,
+			"online_cpus":      onlineCPUs,
+		},
+		"precpu_stats": map[string]any{
+			"cpu_usage": map[string]any{
+				"total_usage": preCPUTotal,
+			},
+			"system_cpu_usage": preSystem,
+		},
+		"memory_stats": map[string]any{
+			"usage": memUsage,
+			"limit": memLimit,
+		},
+	}
+	data, _ := json.Marshal(stats)
+	return data
+}
+
 // Verify MockDockerAPI implements DockerAPI.
 var _ DockerAPI = (*MockDockerAPI)(nil)

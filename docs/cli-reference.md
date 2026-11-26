@@ -1233,11 +1233,23 @@ bosun mayday --list
 bosun mayday --rollback interactive
 
 # Rollback to specific snapshot
-bosun mayday --rollback snapshot-2024-01-15-120000
+bosun mayday --rollback snapshot-20240115-120000.000000000
 
 # Using pirate mode
 bosun mutiny --list
 ```
+
+**Snapshots:**
+
+Snapshots live under `<manifest>/.bosun/snapshots/`, which must be git-ignored (`bosun init` adds `.bosun/` to `.gitignore`). `bosun provision` saves a snapshot of the current output before every write that overwrites it, and stops without writing if the snapshot fails. The newest 20 snapshots are kept.
+
+A rollback first saves the current output as `pre-rollback-<timestamp>` in the same directory. Those copies are also capped at 20 and do not appear in `--list`. To restore one by hand:
+
+```bash
+cp -a .bosun/snapshots/pre-rollback-<timestamp>/. output/
+```
+
+Rollback accepts only a `snapshot-*` name from `--list`; a symlinked snapshot directory is refused.
 
 **Exit Codes:**
 
@@ -1326,6 +1338,8 @@ bosun restore [backup-name]
 **Description:**
 
 Restores infrastructure configs from a previous backup created by the reconcile command. Backups contain tarball archives of configuration files.
+
+The backup name must be a `backup-*` directory shown by `--list`, and its `configs.tar.gz` must be a regular file inside the backup directory. Path separators, `..`, unprefixed names, and symlinked backup directories or archives are refused.
 
 **Arguments:**
 

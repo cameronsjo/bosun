@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -28,10 +27,6 @@ import (
 )
 
 const (
-	// maxWebhookBodySize is the maximum allowed size for webhook request bodies (1MB).
-	// This prevents denial-of-service attacks via oversized payloads.
-	maxWebhookBodySize = 1 * 1024 * 1024
-
 	// Bound attacker-controlled GitHub attribution before it reaches logs,
 	// reconcile state, traces, or Sentry transactions.
 	maxWebhookPusherNameLength = 256
@@ -212,6 +207,13 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the underlying writer to http.NewResponseController. Without
+// it the controller sees only this wrapper and reports ErrNotSupported, so a
+// handler could not extend its write deadline through the logging middleware.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // handleHealth handles the health check endpoint.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
@@ -278,13 +280,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug().Msg("Preparing to process generic webhook request")
 
-	// Limit body size to prevent DoS
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Msg("Failed to read webhook body")
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	// Refuse an oversized body with 413 rather than truncate it (#794).
+	body, ok := ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -378,13 +376,9 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug().Msg("Preparing to process GitHub webhook")
 
-	// Read body with size limit to prevent DoS
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Msg("Failed to read GitHub webhook body")
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	// Refuse an oversized body with 413 rather than truncate it (#794).
+	body, ok := ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -602,15 +596,11 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Limit body size to prevent DoS; bytes needed for both HMAC and JSON decode.
-	var body []byte
-	if r.Body != nil {
-		var err error
-		body, err = io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusBadRequest)
-			return
-		}
+	// The bytes feed both the HMAC and the JSON decode; an oversized body is
+	// refused with 413 rather than truncated (#794).
+	body, ok := ReadWebhookBody(w, r)
+	if !ok {
+		return
 	}
 
 	if !s.authorizeTrigger(w, r, body, schemeManual) {
@@ -800,8 +790,9 @@ func (s *Server) metricsTokenValid(token string) bool {
 type triggerScheme int
 
 const (
-	// schemeGeneric accepts X-Signature or X-Hub-Signature-256 (the generic
-	// /webhook endpoint serves forwarders that use either convention).
+	// schemeGeneric reads the first present of X-Signature,
+	// X-Hub-Signature-256, X-Signature-256 (GenericWebhookSignature); the
+	// receiver's generic /webhook uses the same lookup (#794).
 	schemeGeneric triggerScheme = iota
 	// schemeGitHub accepts only X-Hub-Signature-256 (GitHub's convention).
 	schemeGitHub
@@ -817,11 +808,24 @@ const (
 // With no webhook secret configured the endpoints fail closed (#345): every
 // trigger request is rejected with 403 unless the operator explicitly opted
 // out via BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, in which case each
-// accepted unauthenticated request logs a security warning.
+// accepted unauthenticated request logs a security warning. The placeholder
+// secret counts as none (#794).
+//
+// When WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET conflict, every request is
+// rejected with 403 before the opt-out is consulted (#794).
 func (s *Server) authorizeTrigger(w http.ResponseWriter, r *http.Request, body []byte, scheme triggerScheme) bool {
 	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
 
-	if s.daemon.config.WebhookSecret == "" {
+	if s.daemon.config.WebhookSecretConflict {
+		logger.Error().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg(WebhookSecretConflictMessage)
+		http.Error(w, "Webhook authentication misconfigured", http.StatusForbidden)
+		return false
+	}
+
+	if !WebhookSecretConfigured(s.daemon.config.WebhookSecret) {
 		if s.daemon.config.AllowUnauthenticatedWebhook {
 			logger.Warn().
 				Str("remote_addr", r.RemoteAddr).
@@ -844,10 +848,7 @@ func (s *Server) authorizeTrigger(w http.ResponseWriter, r *http.Request, body [
 	case schemeManual:
 		sig = r.Header.Get("X-Signature")
 	case schemeGeneric:
-		sig = r.Header.Get("X-Signature")
-		if sig == "" {
-			sig = r.Header.Get("X-Hub-Signature-256")
-		}
+		sig = GenericWebhookSignature(r.Header)
 	default:
 		// Fail closed on an unknown scheme: a future variant must pick its
 		// header policy explicitly, never inherit generic's broader one.

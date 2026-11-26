@@ -285,6 +285,24 @@ func TestValidateEnvironment(t *testing.T) {
 		assert.Equal(t, 0, errors)
 	})
 
+	t.Run("differing webhook secrets are an error that names both variables", func(t *testing.T) {
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/user/repo")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "generic-value")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "github-value")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		var errors int
+		output := captureWebhookColorOutput(t, func() { errors = validateEnvironment() })
+
+		assert.Equal(t, 1, errors)
+		assert.Contains(t, output, "WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are set to different values")
+		assert.NotContains(t, output, "generic-value")
+		assert.NotContains(t, output, "github-value")
+	})
+
 	t.Run("returns 1 error when no repo URL set", func(t *testing.T) {
 		t.Setenv("REPO_URL", "")
 		t.Setenv("BOSUN_REPO_URL", "")

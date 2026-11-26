@@ -63,7 +63,10 @@ alerts:
 SENDGRID_API_KEY=SG.xxx...
 SENDGRID_FROM_EMAIL=alerts@example.com
 SENDGRID_FROM_NAME="Bosun Alerts"
+SENDGRID_TO_EMAILS=admin@example.com,oncall@example.com   # comma-separated
 ```
+
+Every name above also has a `BOSUN_` form (`BOSUN_SENDGRID_API_KEY`, `BOSUN_SENDGRID_TO_EMAILS`, and so on) that wins over the unprefixed one.
 
 Emails include:
 - HTML-formatted body with severity-colored headers
@@ -93,7 +96,10 @@ alerts:
 TWILIO_ACCOUNT_SID=ACxxx...
 TWILIO_AUTH_TOKEN=xxx...
 TWILIO_FROM_NUMBER=+15551234567
+TWILIO_TO_NUMBERS=+15559876543,+15551112222   # comma-separated
 ```
+
+Every name above also has a `BOSUN_` form (`BOSUN_TWILIO_AUTH_TOKEN`, `BOSUN_TWILIO_TO_NUMBERS`, and so on) that wins over the unprefixed one.
 
 **Note:** SMS alerts are only sent for **error** and **critical** severity to
 minimize costs. Each message is capped at one billed SMS segment: 160 GSM-7
@@ -150,13 +156,24 @@ ordinary counted failures.
 | `error` | Deployment failed | All |
 | `critical` | Rollback failed | All (SMS included) |
 
-## Environment Variable Priority
+## Which Source Wins
 
-Environment variables override config file values. This allows sensitive values to be injected at runtime:
+Every alert setting resolves the same way, in the daemon, in `bosun reconcile`, and in `bosun alert status` and `bosun alert test`. The order below applies to each setting that has both names; the webhook URL, method and headers have only a `BOSUN_` name and are described after the list:
 
-1. Environment variable (highest priority)
-2. Config file value
-3. No configuration (provider disabled)
+1. the `BOSUN_` environment variable (for example `BOSUN_SENDGRID_API_KEY`)
+2. the legacy unprefixed variable (`SENDGRID_API_KEY`)
+3. the value in `bosun.yaml`
+4. nothing: the provider is disabled
+
+Credentials, senders and recipients each resolve on their own. A credential from the environment is therefore used with the recipients named in `bosun.yaml`: with `SENDGRID_API_KEY` in the environment and `sendgrid_to_emails` in the file, alerts go to the file's addresses. Whoever can edit `bosun.yaml` already chooses where alerts go.
+
+Recipient variables (`SENDGRID_TO_EMAILS`, `TWILIO_TO_NUMBERS` and their `BOSUN_` forms) hold a comma-separated list. A value with no address in it, blank or only commas, counts as unset and falls through to the next source, so it cannot be used to clear the recipients in `bosun.yaml`.
+
+Webhook headers resolve together with the webhook URL. `BOSUN_WEBHOOK_URL` with `BOSUN_WEBHOOK_HEADERS` (a JSON object, for example `{"Authorization":"Bearer ..."}`) replaces both the URL and the headers from `bosun.yaml`. Without `BOSUN_WEBHOOK_URL`, the URL and headers come from `bosun.yaml` and `BOSUN_WEBHOOK_HEADERS` is ignored, so a header from the environment never goes to a URL it was not set for.
+
+**Upgrade note:** an environment-only `BOSUN_WEBHOOK_HEADERS` used with a webhook URL from `bosun.yaml` is no longer sent. Before this resolver the variable applied to a file URL too. Bosun logs a warning at start naming `BOSUN_WEBHOOK_HEADERS` (never its value) when it drops the headers. To keep sending them, set `BOSUN_WEBHOOK_URL` as well, or move the headers into `webhook_headers` in `bosun.yaml`.
+
+Without a project config (no `bosun.yaml` found), `bosun alert status` and `bosun alert test` resolve from the environment alone, with the same names and the same defaults for `on_failure` and `on_recovery` (true).
 
 ## Example: Full Configuration
 
@@ -187,7 +204,9 @@ alerts:
 
 ## Testing Alerts
 
-Use `bosun reconcile --dry-run` to test the reconciliation workflow without making changes. Alerts will still be sent for dry-run results if configured.
+Use `bosun reconcile --dry-run` to test the reconciliation workflow without making changes. Alerts will still be sent for dry-run results if configured: failure, success, and interruption alerts. A dry run sends no recovery alert, because it writes no deploy state and cannot record that a retraction was delivered; a dry run that follows an alerted failure leaves the retraction owed for the next real run.
+
+A dry run never advances the deploy state, so a polling dry-run daemon runs the whole pipeline on every poll and alerts on each one while an alert gate is enabled. The daemon has no `--no-alerts` flag; remove the alert provider settings to silence it. A dry-run daemon sends no drift, resolution, or restart-breaker alerts: its periodic drift check observes only.
 
 To test individual providers:
 

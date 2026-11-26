@@ -276,11 +276,11 @@ The daemon provides:
 | `BOSUN_GIT_USERNAME` | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` | Unset |
 | `BOSUN_GIT_TOKEN` | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` | Unset |
 | `BOSUN_GIT_FETCH_DEPTH` | Shallow clone/fetch history depth; increase when deploy diffs span multiple commits | `1` |
-| `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
+| `BOSUN_POLL_INTERVAL` | Poll interval in seconds or a Go duration; `0` disables polling | `3600` |
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
 | `BOSUN_SOCKET_ALLOWED_UIDS` | Additional numeric UIDs allowed to trigger, or to read `/config`, through the Unix socket (comma-separated) | Daemon UID only |
 | `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Disable Unix socket peer-credential authorization (`true` only; logs security warnings) | `false` |
-| `WEBHOOK_SECRET` | Webhook signature validation | Required for webhook triggers (fail-closed) |
+| `WEBHOOK_SECRET` | Webhook signature validation (read before `GITHUB_WEBHOOK_SECRET`; set only one, or both to the same value) | Required for webhook triggers (fail-closed; `change-me` counts as unset) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Accept unauthenticated webhook triggers (`true` only; logs a security warning per request) | `false` |
 | `BOSUN_LISTEN_ADDR` | Host/IP the HTTP server binds to | All interfaces |
 
@@ -293,6 +293,13 @@ The daemon provides:
 > accept-anything behavior on a trusted network, set
 > `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` explicitly. The Unix socket
 > trigger (`bosun trigger`) is unaffected.
+>
+> A placeholder secret (`change-me` in any case, or the `bosun init` template's
+> example value) counts as no secret. If `WEBHOOK_SECRET` and
+> `GITHUB_WEBHOOK_SECRET` are set to different values, every webhook trigger
+> on both servers gets `403`, even with the opt-out, and startup logs an error
+> naming both variables. A receiver using `--fetch-secret` against such a
+> daemon fails closed the same way.
 >
 > **Unix socket auth also fails closed.** On Linux, the daemon UID and numeric
 > UIDs in `BOSUN_SOCKET_ALLOWED_UIDS` can trigger reconciliation and read

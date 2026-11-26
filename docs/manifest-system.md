@@ -178,7 +178,7 @@ endpoints:
 
 ### Environment/Labels Normalization
 
-The `environment` and `labels` keys are normalized from list to map before merging:
+A compose service's `environment` and `labels` (`services.<name>.environment` and `services.<name>.labels`) are normalized from list to map before merging, whichever form each side uses. A bare entry such as `FOO` (no `=`) is kept as a key with no value, so Compose passes it through from the host. An `environment` or `labels` key elsewhere (service `config:`, chart values) merges like any other key:
 
 ```yaml
 # Input (list format):
@@ -281,7 +281,11 @@ includes:
 
 **Cycle detection:**
 
-The system tracks loaded provisions and skips already-loaded ones to prevent infinite loops.
+A provision that includes itself, directly or through other provisions (`a` includes `b`, `b` includes `a`), is an error (`circular include detected`).
+
+**Shared includes:**
+
+Within one provision's include graph, a provision reached by more than one path (`webapp` includes `healthcheck` and `monitoring`, and both include `container`) is not a cycle. It is merged once, where it first appears, so list-extending keys such as `endpoints` are not duplicated. A later repeat does not re-apply it on top of what came between. Separate entries in a service's `provisions:` list are separate graphs, so a provision shared by two of those entries is merged once per entry.
 
 ### Built-in Provisions
 
@@ -298,7 +302,7 @@ The system tracks loaded provisions and skips already-loaded ones to prevent inf
 
 ### Creating Custom Provisions
 
-Place `.yml` files in your provisions directory:
+Place `.yml` or `.yaml` files in your provisions directory (`foo.yml` wins if both `foo.yml` and `foo.yaml` exist). A provision name, including a name in `includes`, must resolve inside the provisions directory: a name such as `../other` is rejected with a `path traversal detected` error. The check is on the path text; it does not follow symlinks.
 
 ```yaml
 # provisions/my-custom.yml

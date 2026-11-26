@@ -478,14 +478,25 @@ func TestConfigFromEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("GITHUB_WEBHOOK_SECRET overrides WEBHOOK_SECRET", func(t *testing.T) {
+	t.Run("differing WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET fail closed", func(t *testing.T) {
 		t.Setenv("WEBHOOK_SECRET", "generic-secret")
 		t.Setenv("GITHUB_WEBHOOK_SECRET", "github-secret")
 
 		cfg := ConfigFromEnv()
 
-		if cfg.WebhookSecret != "github-secret" {
-			t.Errorf("WebhookSecret = %q, want github-secret", cfg.WebhookSecret)
+		if cfg.WebhookSecret != "" || !cfg.WebhookSecretConflict {
+			t.Errorf("WebhookSecret = %q, conflict = %v; want no secret and a conflict", cfg.WebhookSecret, cfg.WebhookSecretConflict)
+		}
+	})
+
+	t.Run("only GITHUB_WEBHOOK_SECRET still resolves", func(t *testing.T) {
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "github-secret")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.WebhookSecret != "github-secret" || cfg.WebhookSecretConflict {
+			t.Errorf("WebhookSecret = %q, conflict = %v; want github-secret and no conflict", cfg.WebhookSecret, cfg.WebhookSecretConflict)
 		}
 	})
 
@@ -2568,7 +2579,7 @@ func newAlertDaemon(t *testing.T, provider *testAlertProvider) *Daemon {
 	cfg.AlertManager = mgr
 	cfg.ReconcileConfig = reconcile.DefaultConfig()
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
-	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.DryRun = false // the drift tick is observe-only under dry run (#792); these tests exercise it
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
 	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")

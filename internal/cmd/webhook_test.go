@@ -935,6 +935,18 @@ func TestWarnWebhookReceiverAuthPosture(t *testing.T) {
 			want:    "trigger requests will be rejected (403)",
 			notWant: "Signature validation: enabled",
 		},
+		{
+			name:    "placeholder secret fails closed like no secret",
+			handler: &webhookHandler{secret: daemon.PlaceholderWebhookSecret},
+			want:    "trigger requests will be rejected (403)",
+			notWant: "Signature validation: enabled",
+		},
+		{
+			name:    "secret conflict fails closed even with the opt-out",
+			handler: &webhookHandler{secretConflict: true, allowUnauthenticated: true},
+			want:    "WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET differ",
+			notWant: "unauthenticated webhook triggers enabled",
+		},
 	}
 
 	for _, tt := range tests {

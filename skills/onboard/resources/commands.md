@@ -209,7 +209,7 @@ bosun render -o /tmp/rendered unraid/    # Render to output directory
 
 Templates have access to:
 - Secrets data via `{{ . }}` (the root context)
-- All Sprig template functions
+- Sprig template functions, except `env`, `expandenv`, and `getHostByName` (a template that calls one fails to parse)
 - Custom functions: `include`, `fromJsonFile`
 
 `include` and `fromJsonFile` are confined to `<infraDir>/templates` by default.
@@ -250,6 +250,8 @@ bosun migrate helm --force     # Overwrite existing charts
 | `version` | `--provisions` / `--services` / `--stacks` | | Override the directories to scan |
 | `helm` | `--force` | `false` | Overwrite existing charts |
 
+`migrate version` writes a file only when the result is one YAML document with both `apiVersion` and `kind`. A leading `---` marker stays first with the header after it; a file with only one of the two keys gets only the missing one (an existing value is kept, an empty one is replaced in place). A file it cannot migrate into one valid manifest, such as one holding several YAML documents (a closing `---` after the body starts a second, empty document and counts), a flow-style top level, or a first line that is `---` followed by content, is reported as an error and left unchanged, in dry-run too. It processes every file, then exits non-zero if any reported an error.
+
 ---
 
 ## GitOps Commands
@@ -268,7 +270,7 @@ bosun daemon --poll-interval 0        # Disable polling (webhook-only)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n`, `--dry-run` | `false` | Dry run mode (no actual changes) |
+| `-n`, `--dry-run` | `false` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check only observes: it saves no state, stops no container, triggers no self-heal, and sends no alert |
 | `-p`, `--port` | `8080` | HTTP server port |
 | `-i`, `--poll-interval` | `3600` | Poll interval in seconds (0 = disabled) |
 
@@ -302,7 +304,7 @@ bosun reconcile -n --no-alerts # Dry run that sends no alerts
 | `--target` | Reconcile a single named target (from `targets:` config) |
 | `--no-alerts` | Build no alert manager; send nothing, list no providers |
 
-A dry run alerts exactly like a real run — alert dispatch has no dry-run gate — so pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
+A dry run sends failure, success, and interruption alerts like a real run, but no recovery alert, and it writes no deploy state. Pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
 
 ### `bosun trigger`
 
@@ -423,6 +425,18 @@ circuit-breaker decisions, but writes simulated state only to a temporary copy
 that is removed after validation. It never updates the daemon's configured
 state file.
 
+`validate` builds its configuration the way `bosun reconcile` does, from the same
+environment variables and `bosun.yaml`, so a configuration that `reconcile` refuses
+to start on is reported by `validate`: an invalid hook list, a missing age identity
+for the secrets files, targets that cannot be resolved, and a `BOSUN_TARGETS` that is
+not valid JSON (`reconcile` only warns about that one). The quick check changes
+nothing. `--full` is not read-only: it runs one dry run per target, decrypts secrets
+with your age key and renders into `STAGING_DIR`, leaving the rendered tree there at
+restricted permissions, as `reconcile --dry-run` does; it may delete a leftover
+staging tree it cannot secure, and on a staging directory shared with the daemon it
+replaces the last staging evidence. It runs no pre-deploy or post-sync hooks, sends
+no alerts, and ignores `FORCE`.
+
 ### `bosun breaker`
 
 View and manage the deploy circuit breaker, which stops retrying after 3
@@ -478,7 +492,9 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 | `--compose` | Path to compose file containing Traefik service |
 | `--dynamic` | Path to Traefik dynamic config directory |
 
-**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. Additive only — never removes existing config. Template files (`.tmpl`) get display-only output.
+**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. A recommended flag already present with another value is replaced in place (no duplicate); other flags, and the rest of the dynamic config (routers, services, TLS, other middlewares, comments), are kept. An unparseable dynamic config file is never overwritten. The Traefik service is found by image or by name, so it need not be called `traefik`. Template files (`.tmpl`) get display-only output.
+
+**Exit status:** non-zero when the compose file is missing or has no Traefik service, when a prompt is needed but stdin is not a terminal (use `--yes` or `--dry-run`), or when a fix cannot be applied, including middleware fixes when no dynamic config directory was found (pass one with `--dynamic`). The dynamic config file is written back with two-space indentation.
 
 ---
 
@@ -490,6 +506,8 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 bosun radio test               # Test webhook endpoint (GET /health)
 bosun radio status             # Check Tailscale/tunnel connectivity, peers, network info
 ```
+
+For a Cloudflare tunnel, `radio status` uses `tunnel_name`, `hostname` and `health_endpoint` from the `tunnel:` section of `bosun.yaml`.
 
 ---
 
@@ -503,7 +521,7 @@ Error triage and rollback.
 bosun mayday                   # Show recent errors across all containers
 bosun mayday -l                # List available snapshots
 bosun mayday -r interactive    # Interactive rollback menu
-bosun mayday -r 2024-01-15_143022  # Rollback to specific snapshot
+bosun mayday -r snapshot-20240115-143022.000000000  # Rollback to specific snapshot
 ```
 
 **Alias:** `mutiny`
@@ -512,6 +530,16 @@ bosun mayday -r 2024-01-15_143022  # Rollback to specific snapshot
 |------|-------------|
 | `-l`, `--list` | List available snapshots |
 | `-r`, `--rollback` | Rollback to a snapshot (name or "interactive") |
+
+Snapshots live under `<manifest>/.bosun/snapshots/`, which must be git-ignored (`bosun init` adds `.bosun/` to `.gitignore`). `bosun provision` saves a snapshot of the current output before every write that overwrites it, and stops without writing if the snapshot fails. The newest 20 snapshots are kept.
+
+A rollback first saves the current output as `pre-rollback-<timestamp>` in the same directory. Those copies are also capped at 20 and do not appear in `--list`. To restore one by hand:
+
+```bash
+cp -a .bosun/snapshots/pre-rollback-<timestamp>/. output/
+```
+
+Rollback accepts only a `snapshot-*` name from `--list`; a symlinked snapshot directory is refused.
 
 ### `bosun overboard <name>`
 
@@ -554,6 +582,8 @@ Validates webhook signatures and forwards valid requests to the daemon's trigger
 triggers instead; the posture is logged at startup and each accepted request
 logs a security warning. `/health` and `/ready` stay open either way.
 
+**Secret resolution.** The receiver reads `--secret`, then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET` (the daemon's order), then the daemon's secret over `--fetch-secret`. A placeholder counts as no secret: `change-me` in any case and with surrounding whitespace, or the `bosun init` template's example value. Every trigger endpoint answers `403`, even with the opt-out set, when `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` are set to different values and no `--secret` is given, or when the fetched daemon config reports that conflict on the daemon. Startup logs an error naming both variables. The generic `/webhook` reads the first present of `X-Signature`, `X-Hub-Signature-256`, `X-Signature-256`.
+
 `--fetch-secret` reads the daemon's peer-authorized `GET /config`, so the
 receiver must run as the daemon's UID or a `BOSUN_SOCKET_ALLOWED_UIDS` member.
 
@@ -581,6 +611,8 @@ Show configured alert providers (Discord, SendGrid, Twilio) with masked credenti
 bosun alert status
 ```
 
+Without a project config it reads the environment alone, with the daemon's names and defaults: `BOSUN_` variables first, then the legacy ones, including sender and recipient settings, and `Alert on failure` and `Alert on recovery` default to yes.
+
 ### `bosun alert test`
 
 Send a test alert to configured providers.
@@ -598,6 +630,8 @@ bosun alert test -s error              # Set severity (info/warning/error)
 | `-m`, `--message` | Custom test message |
 | `-s`, `--severity` | Alert severity (info, warning, error) |
 
+Without a project config it falls back to the environment alone, resolved like `bosun alert status`: `BOSUN_` variables first, then the legacy ones, including the sender and recipient settings a SendGrid or Twilio test needs.
+
 ---
 
 ## Backup & Restore
@@ -607,14 +641,15 @@ bosun alert test -s error              # Set severity (info/warning/error)
 Restore infrastructure configs from a backup created during reconciliation.
 
 ```bash
-bosun restore                  # Restore latest backup
-bosun restore -l               # List available backups
-bosun restore 2024-01-15_143022  # Restore specific backup
+bosun restore -l                        # List available backups
+bosun restore backup-20240115-143022    # Restore a specific backup
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-l`, `--list` | List available backups |
+
+A backup name is required; there is no "restore latest" default. The name must be a `backup-*` directory shown by `--list`, and its `configs.tar.gz` must be a regular file inside the backup directory. Symlinked backup directories and archives are refused.
 
 After restoring, automatically runs `docker compose up -d` if a compose file is present.
 

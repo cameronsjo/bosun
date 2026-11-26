@@ -19,6 +19,42 @@ type targetRuntimeStatus struct {
 	driftStatus string
 	message     string
 	checkedAt   time.Time
+	// observed is the last drift report a dry-run daemon saw for the target. A
+	// dry run never saves state, so the persisted drift fields stay frozen at the
+	// last real run; status views serve this report instead (#792).
+	observed *observedDrift
+}
+
+// observedDrift is a dry-run daemon's last drift observation for one target,
+// copied so later ticks cannot mutate what a status reader holds.
+type observedDrift struct {
+	items     []reconcile.DriftItem
+	checkedAt time.Time
+}
+
+// recordObservedDrift remembers a dry-run tick's drift report for the target.
+func (d *Daemon) recordObservedDrift(name string, report *reconcile.DriftReport) {
+	observed := &observedDrift{
+		items:     append([]reconcile.DriftItem(nil), report.Items...),
+		checkedAt: report.CheckedAt,
+	}
+	d.targetRuntimeMu.Lock()
+	if d.targetRuntime == nil {
+		d.targetRuntime = make(map[string]targetRuntimeStatus)
+	}
+	status := d.targetRuntime[name]
+	status.observed = observed
+	d.targetRuntime[name] = status
+	d.targetRuntimeMu.Unlock()
+}
+
+// observedDriftFor returns the dry-run observation for the target, if any.
+func (d *Daemon) observedDriftFor(name string) (*observedDrift, bool) {
+	status, ok := d.targetRuntimeStatus(name)
+	if !ok || status.observed == nil {
+		return nil, false
+	}
+	return status.observed, true
 }
 
 // TargetDriftStatus is the bounded drift summary exposed by detailed operator
@@ -165,14 +201,27 @@ func (d *Daemon) targetHealthStatuses(targets []reconcile.Target) []TargetHealth
 		}
 
 		runtimeStatus, hasRuntime := d.targetRuntimeStatus(target.Name)
-		drift := TargetDriftStatus{
-			Status: computeDriftStatus(len(state.DriftItems), state.LastDeployedCommit),
+		// The drift items and their timestamp come from the persisted state, or,
+		// under dry run, from the daemon's in-memory observation: a dry run never
+		// saves state, so the file's drift fields are frozen at the last real run
+		// and must not be paired with a fresh runtime status. Before the first
+		// dry-run tick there is nothing to report.
+		driftItems, driftCheckedAt := state.DriftItems, state.DriftCheckedAt
+		driftStatus := computeDriftStatus(len(driftItems), state.LastDeployedCommit)
+		if cfg.DryRun {
+			driftItems, driftCheckedAt = nil, time.Time{}
+			driftStatus = "unknown" // no observation yet: do not claim clean without data
+			if observed, ok := d.observedDriftFor(target.Name); ok {
+				driftItems, driftCheckedAt = observed.items, observed.checkedAt
+				driftStatus = computeDriftStatus(len(driftItems), state.LastDeployedCommit)
+			}
 		}
-		if !state.DriftCheckedAt.IsZero() {
-			drift.CheckedAt = state.DriftCheckedAt
+		drift := TargetDriftStatus{Status: driftStatus}
+		if !driftCheckedAt.IsZero() {
+			drift.CheckedAt = driftCheckedAt
 		}
-		if len(state.DriftItems) > 0 {
-			drift.Items = len(state.DriftItems)
+		if len(driftItems) > 0 {
+			drift.Items = len(driftItems)
 		}
 
 		if target.TargetHost != "" {

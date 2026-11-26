@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -50,6 +49,11 @@ WEBHOOK AUTH FAILS CLOSED:
   or --fetch-secret), the trigger endpoints reject every request with 403.
   Set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated
   triggers instead; each accepted request is logged as a security warning.
+  A placeholder (change-me in any case, or the init template example) counts
+  as no secret. If WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are both set to
+  different values and --secret is not given, or --fetch-secret reaches a
+  daemon reporting that conflict, every trigger request is rejected with 403,
+  opt-out or not.
   This mirrors the daemon's own webhook posture.
 
 DAEMON-INJECTED SECRETS:
@@ -92,13 +96,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	client := daemon.NewClient(webhookSocket)
 
 	// Get secret - priority: flag > env > daemon-injected
-	secret := webhookSecret
-	if secret == "" {
-		secret = os.Getenv("WEBHOOK_SECRET")
-	}
-	if secret == "" {
-		secret = os.Getenv("GITHUB_WEBHOOK_SECRET")
-	}
+	secret, secretConflict := resolveReceiverSecret(webhookSecret, os.Getenv)
 
 	// Tracked branch for the generic /webhook ref filter (#728) - priority:
 	// flag > env > daemon config.
@@ -125,10 +123,9 @@ func runWebhook(cmd *cobra.Command, args []string) {
 			// than silently accepting unsigned requests.
 			ui.Warning("Could not fetch config from daemon: %v", err)
 		} else {
-			// Same rule as before the branch lookup: the daemon secret applies on
-			// --fetch-secret or when no secret resolved.
-			if (webhookFetchSecret || secret == "") && cfg.WebhookSecret != "" {
-				secret = cfg.WebhookSecret
+			var fetched bool
+			secret, secretConflict, fetched = mergeFetchedSecret(secret, secretConflict, webhookFetchSecret, cfg)
+			if fetched {
 				ui.Success("Webhook secret fetched from daemon (never stored on disk)")
 			}
 			if branch == "" {
@@ -141,6 +138,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	handler := &webhookHandler{
 		client:               client,
 		secret:               secret,
+		secretConflict:       secretConflict,
 		allowUnauthenticated: os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK") == "true",
 		branch:               branch,
 	}
@@ -169,6 +167,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
 	<-sigCh
 
 	ui.Info("Shutting down...")
@@ -182,18 +181,56 @@ func runWebhook(cmd *cobra.Command, args []string) {
 }
 
 // maxWebhookBodySize caps request bodies on the standalone webhook receiver to
-// prevent unbounded reads from a tunnel-exposed endpoint (mirrors the daemon's
-// own 1MB limit in internal/daemon/server.go).
-const maxWebhookBodySize = 1 << 20 // 1MB
+// prevent unbounded reads from a tunnel-exposed endpoint. It is the daemon's
+// limit: both servers read bodies through daemon.ReadWebhookBody, which
+// answers 413 past it.
+const maxWebhookBodySize = daemon.MaxWebhookBodySize
 
 // maxWebhookHeaderBytes caps request header size (request line + header fields),
 // which is distinct from the body limit above. 64KB is generous for webhook
 // headers while bounding header-based memory abuse.
 const maxWebhookHeaderBytes = 64 * 1024 // 64KB
 
+// resolveReceiverSecret resolves the receiver's webhook secret: a usable
+// --secret flag wins, else daemon.ResolveWebhookSecret over the environment,
+// the same order the daemon uses (#794). The placeholder secret counts as
+// unset. conflict reports two differing environment secrets with no flag to
+// settle them; the receiver then fails closed.
+func resolveReceiverSecret(flag string, getenv func(string) string) (secret string, conflict bool) {
+	if daemon.WebhookSecretConfigured(flag) {
+		return flag, false
+	}
+	return daemon.ResolveWebhookSecret(getenv)
+}
+
+// mergeFetchedSecret applies the daemon's GET /config answer to the secret the
+// receiver resolved locally. The daemon's secret applies on --fetch-secret, or
+// when no local secret resolved. A local conflict stays fail-closed, and a
+// daemon-reported conflict (#837) makes the receiver fail closed too: the empty
+// secret the daemon sends alongside it is not "no secret configured", so the
+// receiver's own opt-out must not open the endpoints. fetched reports that the
+// daemon's secret was adopted.
+func mergeFetchedSecret(secret string, conflict, fetchRequested bool, cfg *daemon.ConfigResponse) (merged string, mergedConflict, fetched bool) {
+	if conflict || cfg == nil || (!fetchRequested && secret != "") {
+		return secret, conflict, false
+	}
+	if cfg.WebhookSecretConflict {
+		return "", true, false
+	}
+	if daemon.WebhookSecretConfigured(cfg.WebhookSecret) {
+		return cfg.WebhookSecret, false, true
+	}
+	return secret, false, false
+}
+
 type webhookHandler struct {
 	client webhookTriggerClient
 	secret string
+
+	// secretConflict records that WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET
+	// differ with no --secret to settle them (#794). Every trigger request is
+	// then rejected with 403, opt-out or not.
+	secretConflict bool
 
 	// allowUnauthenticated opts out of the fail-closed posture below
 	// (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match), mirroring the
@@ -242,11 +279,19 @@ func (h *webhookHandler) claimDelivery(w http.ResponseWriter, r *http.Request, b
 // A configured secret passes this gate; the caller's provider-specific
 // signature check is the second one.
 func (h *webhookHandler) authorizeTrigger(w http.ResponseWriter, r *http.Request) bool {
-	if h.secret != "" {
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	if h.secretConflict {
+		logger.Error().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg(daemon.WebhookSecretConflictMessage)
+		http.Error(w, "Webhook authentication misconfigured", http.StatusForbidden)
+		return false
+	}
+	if daemon.WebhookSecretConfigured(h.secret) {
 		return true
 	}
 
-	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
 	if h.allowUnauthenticated {
 		logger.Warn().
 			Str("remote_addr", r.RemoteAddr).
@@ -288,7 +333,12 @@ func newWebhookMux(handler *webhookHandler) *http.ServeMux {
 // opted-out receiver must never hide its exposure.
 func warnWebhookReceiverAuthPosture(handler *webhookHandler) {
 	logger := log.Component(log.ComponentWebhook)
-	if handler.secret != "" {
+	if handler.secretConflict {
+		logger.Error().Msg(daemon.WebhookSecretConflictMessage)
+		ui.Error("Webhooks fail closed: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET differ, trigger requests will be rejected (403)")
+		return
+	}
+	if daemon.WebhookSecretConfigured(handler.secret) {
 		ui.Info("Signature validation: enabled")
 		return
 	}
@@ -326,18 +376,14 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read body for signature validation
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	body, ok := daemon.ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
 	// Validate signature if secret is configured
-	if h.secret != "" {
-		sig := r.Header.Get("X-Hub-Signature-256")
-		if sig == "" {
-			sig = r.Header.Get("X-Signature-256")
-		}
+	if daemon.WebhookSecretConfigured(h.secret) {
+		sig := daemon.GenericWebhookSignature(r.Header)
 		if !validateSignature(body, sig, h.secret) {
 			ui.Warning("Invalid webhook signature from %s", r.RemoteAddr)
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
@@ -403,14 +449,13 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Read body
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	body, ok := daemon.ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
 	// Validate GitHub signature
-	if h.secret != "" {
+	if daemon.WebhookSecretConfigured(h.secret) {
 		sig := r.Header.Get("X-Hub-Signature-256")
 		if !validateGitHubSignature(body, sig, h.secret) {
 			ui.Warning("Invalid GitHub signature from %s", r.RemoteAddr)
@@ -491,14 +536,13 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Read body
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	body, ok := daemon.ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
 	// Validate GitLab token (X-Gitlab-Token header)
-	if h.secret != "" {
+	if daemon.WebhookSecretConfigured(h.secret) {
 		token := r.Header.Get("X-Gitlab-Token")
 		if subtle.ConstantTimeCompare([]byte(token), []byte(h.secret)) != 1 {
 			ui.Warning("Invalid GitLab token from %s", r.RemoteAddr)
@@ -572,14 +616,13 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Read body
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	body, ok := daemon.ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
 	// Validate Gitea signature (X-Gitea-Signature header, HMAC-SHA256)
-	if h.secret != "" {
+	if daemon.WebhookSecretConfigured(h.secret) {
 		sig := r.Header.Get("X-Gitea-Signature")
 		if !validateGiteaSignature(body, sig, h.secret) {
 			ui.Warning("Invalid Gitea signature from %s", r.RemoteAddr)
@@ -655,14 +698,13 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 	}
 
 	// Read body
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	body, ok := daemon.ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
 	// Validate Bitbucket signature (X-Hub-Signature header for Bitbucket Cloud)
-	if h.secret != "" {
+	if daemon.WebhookSecretConfigured(h.secret) {
 		sig := r.Header.Get("X-Hub-Signature")
 		if sig == "" {
 			// Try legacy header

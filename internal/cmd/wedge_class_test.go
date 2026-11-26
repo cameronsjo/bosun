@@ -44,34 +44,52 @@ func TestRunComposeUp_ReturnsErrorOnMissingComposeFile(t *testing.T) {
 }
 
 // TestWebhookHandlers_RejectOversizedBody proves the standalone (tunnel-exposed)
-// webhook receiver caps request-body size like the daemon's own handlers do,
-// instead of reading an unbounded body into memory.
+// webhook receiver refuses a body past the daemon's limit with 413 and
+// forwards nothing (#794). Each mode must get past the receiver's fail-closed
+// gate, which runs before the body read; the fail-closed row pins that order.
 func TestWebhookHandlers_RejectOversizedBody(t *testing.T) {
-	h := &webhookHandler{secret: ""} // no secret: would otherwise forward to a nil client
-
 	oversized := bytes.Repeat([]byte("a"), maxWebhookBodySize+1)
 
-	cases := []struct {
+	endpoints := []struct {
 		name string
 		path string
-		fn   func(http.ResponseWriter, *http.Request)
+		fn   func(*webhookHandler) http.HandlerFunc
 	}{
-		{"generic", "/webhook", h.handleWebhook},
-		{"github", "/webhook/github", h.handleGitHubWebhook},
-		{"gitlab", "/webhook/gitlab", h.handleGitLabWebhook},
-		{"gitea", "/webhook/gitea", h.handleGiteaWebhook},
-		{"bitbucket", "/webhook/bitbucket", h.handleBitbucketWebhook},
+		{"generic", "/webhook", func(h *webhookHandler) http.HandlerFunc { return h.handleWebhook }},
+		{"github", "/webhook/github", func(h *webhookHandler) http.HandlerFunc { return h.handleGitHubWebhook }},
+		{"gitlab", "/webhook/gitlab", func(h *webhookHandler) http.HandlerFunc { return h.handleGitLabWebhook }},
+		{"gitea", "/webhook/gitea", func(h *webhookHandler) http.HandlerFunc { return h.handleGiteaWebhook }},
+		{"bitbucket", "/webhook/bitbucket", func(h *webhookHandler) http.HandlerFunc { return h.handleBitbucketWebhook }},
+	}
+	modes := []struct {
+		name     string
+		handler  func(*recordingWebhookClient) *webhookHandler
+		wantCode int
+	}{
+		{"unauthenticated opt-out", func(c *recordingWebhookClient) *webhookHandler {
+			return &webhookHandler{client: c, allowUnauthenticated: true}
+		}, http.StatusRequestEntityTooLarge},
+		{"secret configured", func(c *recordingWebhookClient) *webhookHandler {
+			return &webhookHandler{client: c, secret: "oversize-secret"}
+		}, http.StatusRequestEntityTooLarge},
+		{"fail-closed no secret", func(c *recordingWebhookClient) *webhookHandler {
+			return &webhookHandler{client: c}
+		}, http.StatusForbidden},
 	}
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, c.path, bytes.NewReader(oversized))
-			rec := httptest.NewRecorder()
+	for _, ep := range endpoints {
+		for _, mode := range modes {
+			t.Run(ep.name+"/"+mode.name, func(t *testing.T) {
+				client := &recordingWebhookClient{}
+				h := mode.handler(client)
+				req := httptest.NewRequest(http.MethodPost, ep.path, bytes.NewReader(oversized))
+				rec := httptest.NewRecorder()
 
-			c.fn(rec, req)
+				ep.fn(h)(rec, req)
 
-			assert.GreaterOrEqualf(t, rec.Code, 400, "oversized body must be rejected, got %d", rec.Code)
-			assert.Lessf(t, rec.Code, 500, "rejection should be a client error, got %d", rec.Code)
-		})
+				assert.Equal(t, mode.wantCode, rec.Code)
+				assert.Zero(t, client.triggerCalls, "an oversized body must not be forwarded to the daemon")
+			})
+		}
 	}
 }

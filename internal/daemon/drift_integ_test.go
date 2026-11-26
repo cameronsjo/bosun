@@ -64,7 +64,7 @@ func TestDaemonRunDriftCheck_UpdatesStateFile(t *testing.T) {
 	cfg.APITimeout = 5 * time.Second
 	cfg.ReconcileConfig = reconcile.DefaultConfig()
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
-	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.DryRun = false // the drift tick is observe-only under dry run (#792); this test exercises it
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
 	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = stateFile
@@ -205,7 +205,10 @@ func TestDaemonRunDriftCheck_ConcurrentCallsSerializeStateUpdates(t *testing.T) 
 	assert.False(t, loaded.DriftCheckedAt.IsZero())
 }
 
-func TestDaemonRunDriftCheck_BlocksReconcileAdmissionForStateCycle(t *testing.T) {
+// TestDaemonRunDriftCheck_RefusesReconcileAdmissionWithoutHoldingMutex pins
+// both halves of #793: reconcile admission stays claimed for the whole drift
+// state cycle, but reconcileMu itself is free during the cycle's Docker I/O.
+func TestDaemonRunDriftCheck_RefusesReconcileAdmissionWithoutHoldingMutex(t *testing.T) {
 	enteredDocker := make(chan struct{})
 	releaseDocker := make(chan struct{})
 	mock := dockertest.NewMockDockerAPI()
@@ -235,14 +238,22 @@ func TestDaemonRunDriftCheck_BlocksReconcileAdmissionForStateCycle(t *testing.T)
 	}()
 	<-enteredDocker
 
-	if d.reconcileMu.TryLock() {
-		d.reconcileMu.Unlock()
+	if !d.reconcileMu.TryLock() {
 		close(releaseDocker)
 		<-done
-		t.Fatal("reconcile admission was not held across the drift state cycle")
+		t.Fatal("reconcileMu was held across drift-check Docker I/O")
 	}
+	drifting := d.drifting
+	d.reconcileMu.Unlock()
+	assert.True(t, drifting, "drift admission must stay claimed for the whole state cycle")
+
 	close(releaseDocker)
 	<-done
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.drifting, "drift admission must be released when the cycle ends")
+	assert.Nil(t, d.driftDone)
+	d.reconcileMu.Unlock()
 }
 
 func TestDaemonRunDriftCheck_ShutdownDoesNotConsumeSelfHealAttempt(t *testing.T) {

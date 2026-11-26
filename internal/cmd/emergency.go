@@ -6,12 +6,15 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -448,6 +451,44 @@ func listBackups(backupDir string) error {
 	return nil
 }
 
+// backupPrefix is the prefix reconcile gives backup directories
+// (backup-YYYYMMDD-HHMMSS). Restore accepts only names with it.
+const backupPrefix = "backup-"
+
+// backupArchiveName is the archive restore extracts from a backup directory.
+const backupArchiveName = "configs.tar.gz"
+
+// openBackupRoot pins the backup directory; a package var for fault injection.
+var openBackupRoot = os.OpenRoot
+
+// openBackupArchive opens <backupDir>/<name>/configs.tar.gz through a root
+// pinned at backupDir, refusing a symlinked archive, a non-regular file, and
+// any resolution that escapes the backup directory.
+func openBackupArchive(backupDir, name string) (*os.File, error) {
+	root, err := openBackupRoot(backupDir)
+	if err != nil {
+		return nil, fmt.Errorf("open backup root: %w", err)
+	}
+	// The opened file stays valid after its root closes.
+	defer func() { _ = root.Close() }()
+
+	file, err := fileutil.OpenRootRegular(root, filepath.Join(name, backupArchiveName), false)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("backup incomplete: %s not found in %s", backupArchiveName, name)
+		}
+		return nil, fmt.Errorf("open backup archive: %w", err)
+	}
+	return file, nil
+}
+
+// isRegularArchive reports whether path is a regular file, without following
+// a symlink, so --list agrees with what restore will accept.
+func isRegularArchive(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func getBackups(backupDir string) ([]BackupInfo, error) {
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
@@ -459,7 +500,7 @@ func getBackups(backupDir string) ([]BackupInfo, error) {
 
 	var backups []BackupInfo
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "backup-") {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), backupPrefix) {
 			continue
 		}
 
@@ -469,16 +510,10 @@ func getBackups(backupDir string) ([]BackupInfo, error) {
 		}
 
 		backupPath := filepath.Join(backupDir, e.Name())
-		tarPath := filepath.Join(backupPath, "configs.tar.gz")
-		hasTar := false
-		if _, err := os.Stat(tarPath); err == nil {
-			hasTar = true
-		}
-
 		backups = append(backups, BackupInfo{
 			Name:    e.Name(),
 			Path:    backupPath,
-			HasTar:  hasTar,
+			HasTar:  isRegularArchive(filepath.Join(backupPath, backupArchiveName)),
 			ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
 		})
 	}
@@ -492,18 +527,25 @@ func getBackups(backupDir string) ([]BackupInfo, error) {
 }
 
 func doRestore(ctx context.Context, backupDir, backupName string) error {
-	backupPath := filepath.Join(backupDir, backupName)
-
-	// Validate backup exists
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+	// The name is joined under the backup directory and the archive is
+	// restored as root, so it must be one listed backup-* entry.
+	if err := snapshot.ValidateEntryName(backupName, backupPrefix); err != nil {
+		return fmt.Errorf("restore backup: %w", err)
+	}
+	backups, err := getBackups(backupDir)
+	if err != nil {
+		return fmt.Errorf("list backups: %w", err)
+	}
+	if !slices.ContainsFunc(backups, func(b BackupInfo) bool { return b.Name == backupName }) {
 		return fmt.Errorf("backup not found: %s", backupName)
 	}
+	backupPath := filepath.Join(backupDir, backupName)
 
-	// Validate configs.tar.gz exists
-	tarPath := filepath.Join(backupPath, "configs.tar.gz")
-	if _, err := os.Stat(tarPath); os.IsNotExist(err) {
-		return fmt.Errorf("backup incomplete: configs.tar.gz not found in %s", backupName)
+	archive, err := openBackupArchive(backupDir, backupName)
+	if err != nil {
+		return err
 	}
+	defer func() { _ = archive.Close() }()
 
 	// Audit log: Backup restore
 	log.Warn().
@@ -530,7 +572,7 @@ func doRestore(ctx context.Context, backupDir, backupName string) error {
 
 	// Extract backup to staging
 	ui.Info("  Extracting backup...")
-	if err := extractTarGz(tarPath, stagingDir); err != nil {
+	if err := extractTarGzFrom(archive, stagingDir); err != nil {
 		return fmt.Errorf("failed to extract backup: %w", err)
 	}
 
@@ -607,14 +649,10 @@ func getAppdataDir() string {
 	return ""
 }
 
-func extractTarGz(tarPath, destDir string) error {
-	file, err := os.Open(tarPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-
-	gzr, err := gzip.NewReader(file)
+// extractTarGzFrom extracts a gzipped tar stream into destDir. The caller
+// opens the archive, so source containment is decided where it is opened.
+func extractTarGzFrom(r io.Reader, destDir string) error {
+	gzr, err := gzip.NewReader(r)
 	if err != nil {
 		return err
 	}

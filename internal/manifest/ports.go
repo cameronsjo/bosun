@@ -146,10 +146,11 @@ type ComposePortFile struct {
 	Services map[string]ComposePortService `yaml:"services"`
 }
 
-// ComposePortService holds the ports and labels for a single service.
+// ComposePortService holds the ports for a single service. Other service keys,
+// labels included, are ignored: compose allows labels as a map or a list, and
+// nothing here reads them.
 type ComposePortService struct {
-	Ports  []any             `yaml:"ports"`
-	Labels map[string]string `yaml:"labels"`
+	Ports []any `yaml:"ports"`
 }
 
 // normalizeBindAddr converts explicit wildcard addresses ("0.0.0.0", "::")

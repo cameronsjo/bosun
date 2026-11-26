@@ -783,6 +783,52 @@ func TestClient_GetContainerStats(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// cgroup v2 hosts send online_cpus and no percpu_usage. The original
+			// code scaled by len(percpu_usage) == 0 and reported 0%.
+			name:      "cgroup v2 online_cpus without percpu_usage",
+			container: "web",
+			setup: serveStats(makeStatsJSONCgroupV2(
+				200000000, 2000000000, 100000000, 1000000000, 1024, 2048, 4,
+			)),
+			wantCPU: 40.0, // (100M / 1000M) * 4 * 100
+			wantMem: 1024,
+		},
+		{
+			// The original subtracted uint64 counters before the float64 cast, so
+			// a reset (current < previous) wrapped to ~1.8e19 and produced a huge
+			// percentage instead of 0.
+			name:      "cpu counter reset reports zero",
+			container: "web",
+			setup: serveStats(makeStatsJSON(
+				100, 2000000000, 200, 1000000000, 1024, 2048, 4,
+			)),
+			wantCPU: 0,
+			wantMem: 1024,
+		},
+		{
+			// The system counter wraps the same way; on the original the wrapped
+			// divisor made the result tiny but nonzero, so this case relies on the
+			// exact-zero assertion below.
+			name:      "system counter reset reports zero",
+			container: "web",
+			setup: serveStats(makeStatsJSON(
+				200000000, 1000000000, 100000000, 2000000000, 1024, 2048, 4,
+			)),
+			wantCPU: 0,
+			wantMem: 1024,
+		},
+		{
+			// Control: a sample with neither online_cpus nor percpu_usage reports
+			// 0% rather than a guessed core count. Passes on the original too.
+			name:      "no cpu count in sample reports zero",
+			container: "web",
+			setup: serveStats(makeStatsJSONCgroupV2(
+				200000000, 2000000000, 100000000, 1000000000, 1024, 2048, 0,
+			)),
+			wantCPU: 0,
+			wantMem: 1024,
+		},
+		{
 			name:      "failure",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
@@ -805,10 +851,27 @@ func TestClient_GetContainerStats(t *testing.T) {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				assert.InDelta(t, tt.wantCPU, got.CPUPercent, 0.1)
+				if tt.wantCPU == 0 {
+					// Exact: a tolerance would accept the original's tiny wrapped value.
+					assert.Equal(t, 0.0, got.CPUPercent)
+				} else {
+					assert.InDelta(t, tt.wantCPU, got.CPUPercent, 0.1)
+				}
 				assert.Equal(t, tt.wantMem, got.MemUsage)
 			}
 		})
+	}
+}
+
+// serveStats returns a setup func that makes the mock serve data as the
+// ContainerStats response body.
+func serveStats(data []byte) func(*MockDockerAPI) {
+	return func(m *MockDockerAPI) {
+		m.ContainerStatsFunc = func(ctx context.Context, containerID string, options client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
+			return client.ContainerStatsResult{
+				Body: io.NopCloser(bytes.NewReader(data)),
+			}, nil
+		}
 	}
 }
 

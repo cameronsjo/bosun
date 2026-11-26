@@ -56,12 +56,12 @@ func (r *Reconciler) finalizeAttempt(ctx context.Context, runErr error, snapshot
 			Timestamp: time.Now().UTC(),
 			Alerted:   priorAlerted,
 		}
-		if err := SaveState(r.config.StateFile, state); err != nil {
+		if err := r.persistState(state); err != nil {
 			logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to persist interrupted reconcile outcome")
 		}
 		if r.sendInterruptionAlert(ctx) && !priorAlerted {
 			state.LastAttemptOutcome.Alerted = true
-			if err := SaveState(r.config.StateFile, state); err != nil {
+			if err := r.persistState(state); err != nil {
 				logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to persist interruption alert delivery")
 			}
 		}
@@ -88,7 +88,7 @@ func (r *Reconciler) finalizeAttempt(ctx context.Context, runErr error, snapshot
 	}
 
 	state.LastAttemptOutcome = nil
-	if err := SaveState(r.config.StateFile, state); err != nil {
+	if err := r.persistState(state); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to clear stale interrupted reconcile outcome")
 	}
 }

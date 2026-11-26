@@ -25,9 +25,20 @@ const (
 	// Keep daemon client error responses within the same 1 MiB budget used for
 	// webhook request bodies. One additional byte is read only to detect
 	// truncation deterministically.
-	maxDaemonClientErrorBodySize = maxWebhookBodySize
+	maxDaemonClientErrorBodySize = MaxWebhookBodySize
 	daemonErrorBodyTruncated     = "... [truncated]"
+
+	// maxDaemonClientBodySize caps every success-path response the client
+	// decodes, under the same budget. A response past it is cut off and fails to
+	// decode instead of being read without bound.
+	maxDaemonClientBodySize = MaxWebhookBodySize
 )
+
+// decodeDaemonJSON decodes a success-path response body under
+// maxDaemonClientBodySize.
+func decodeDaemonJSON(body io.Reader, out any) error {
+	return json.NewDecoder(io.LimitReader(body, maxDaemonClientBodySize)).Decode(out)
+}
 
 // NewClient creates a new daemon client using Unix socket.
 func NewClient(socketPath string) *Client {
@@ -89,7 +100,7 @@ func (c *Client) Trigger(ctx context.Context, source string, force bool) (*Trigg
 	}
 
 	var result TriggerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeDaemonJSON(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -130,7 +141,7 @@ func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
 	}
 
 	var result StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeDaemonJSON(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -160,7 +171,7 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	}
 
 	var result HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeDaemonJSON(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -199,7 +210,7 @@ func (c *Client) Config(ctx context.Context) (*ConfigResponse, error) {
 	}
 
 	var result ConfigResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeDaemonJSON(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 

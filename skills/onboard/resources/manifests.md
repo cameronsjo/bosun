@@ -193,7 +193,7 @@ gatus:           # Gatus monitoring endpoints
 
 ### Writing Custom Provisions
 
-Create a YAML file in `manifest/provisions/`:
+Create a `.yml` or `.yaml` file in `manifest/provisions/` (if both `my-custom.yml` and `my-custom.yaml` exist, the `.yml` wins). The provision name, including any name under `includes:`, must resolve inside that directory: `../other` is rejected with `path traversal detected`. Within one provision's include graph, a provision included by more than one path (a diamond) is merged once, at its first occurrence, and only a true cycle (`a` includes `b`, `b` includes `a`) is an error. The containment check is on the path text and does not follow symlinks:
 
 ```yaml
 # manifest/provisions/my-custom.yml
@@ -239,7 +239,7 @@ Duplicate entries are removed:
 
 ### Extend Merge (endpoints)
 
-Lists are concatenated:
+Lists are concatenated, and each element is kept exactly as written (endpoint maps stay maps):
 
 ```yaml
 # Provision A: endpoints: [{name: health}]
@@ -249,12 +249,20 @@ Lists are concatenated:
 
 ### Environment/Labels Normalization
 
-`environment` and `labels` are normalized from list to map format before merging, so provisions can safely merge environment variables:
+A compose service's `environment` and `labels` (`services.<name>.environment`, `services.<name>.labels`) accept list or map format, in any combination, and are normalized to map format before merging, so provisions can safely merge environment variables:
 
 ```yaml
 # Input (list format):     environment: ["FOO=bar", "BAZ=qux"]
 # Normalized (map format): environment: {FOO: bar, BAZ: qux}
 ```
+
+A bare list entry such as `FOO` (no `=`) is kept as a key with no value, which tells Compose to pass `FOO` through from the host environment. On a key that appears in both, the later value wins.
+
+This applies only to compose services. An `environment` or `labels` key anywhere else, such as in a service's `config:` block or in chart values, merges like any other key, so a list there is replaced by the later list.
+
+## Chart Templates (Helm-aligned)
+
+Charts under `charts/` render Go templates from `charts/templates/` with Sprig plus `include "name" .`, `nindent` and `toYaml`. `include` nests at most 64 levels: a template that includes itself, directly or through other templates, fails with `template include depth exceeded maximum` instead of crashing. Chart names, template names (the chart's `templates:` list, `dependencies:` names, and names passed to `include`) must resolve inside `charts/` and `charts/templates/`: `../other` is rejected with `path traversal detected`. The check is on the path text and does not follow symlinks.
 
 ## Sidecars (needs/services)
 

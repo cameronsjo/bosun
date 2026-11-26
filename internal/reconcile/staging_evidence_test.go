@@ -613,7 +613,11 @@ func TestRunCleanupFallbackControlsSuccessfulState(t *testing.T) {
 	}
 }
 
-func TestRunDryRunProtectionFailurePrecedesSuccessStateAndAlert(t *testing.T) {
+// TestRunDryRunProtectionFailurePrecedesSuccessAlert pins that a failed dry-run
+// staging finalization aborts before the success alert. A dry run persists no
+// state at any boundary, so the success alert is the only boundary left to order;
+// the state file stays absent.
+func TestRunDryRunProtectionFailurePrecedesSuccessAlert(t *testing.T) {
 	baseDir := evalSymlinks(t, t.TempDir())
 	repoDir := filepath.Join(baseDir, "repo")
 	stagingDir := filepath.Join(baseDir, "staging")
@@ -657,9 +661,7 @@ func TestRunDryRunProtectionFailurePrecedesSuccessStateAndAlert(t *testing.T) {
 	assert.ErrorContains(t, err, "finalize dry-run staging evidence")
 	assert.ErrorContains(t, err, "dry-run harden injected")
 	assert.ErrorContains(t, err, "dry-run delete injected")
-	state := LoadState(cfg.StateFile)
-	assert.Empty(t, state.LastDeployedCommit, "security finalization must precede the success state boundary")
-	assert.Zero(t, state.DeployCount)
+	assert.NoFileExists(t, cfg.StateFile, "a dry run persists no state, even when it fails")
 	assert.Zero(t, alerter.deploySuccessCalls, "security finalization must precede the success alert boundary")
 }
 

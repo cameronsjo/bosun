@@ -126,7 +126,9 @@ func ensureStateDirForCLI(stateFile string) error {
 // reconciliation should use. Real runs use the configured file after verifying
 // its parent. Dry runs use a temporary copy so skip and breaker decisions still
 // see current state, while simulated attempt/success writes cannot mutate
-// production state.
+// production state. This is a second barrier: Reconciler.Run already persists
+// nothing on a dry run (persistState), so the copy only matters if a future
+// writer bypasses it.
 func prepareStateFileForCLIRun(stateFile string, dryRun bool) (string, func(), error) {
 	return prepareStateFileForCLIRunWithSave(stateFile, dryRun, reconcile.SaveState)
 }
@@ -184,12 +186,34 @@ func envBoolOrWarn(name string) bool {
 	return value
 }
 
+// reconcileFlagInputs are the command-line flags that shape the reconciler
+// configuration. A command that builds the configuration without owning those
+// flags (bosun validate) passes the zero value, so a flag variable left set by
+// an earlier command in the same process cannot reach it.
+type reconcileFlagInputs struct {
+	dryRun bool
+	force  bool
+	local  bool
+	remote string
+}
+
 // buildReconcileConfigFromEnv assembles the one-shot reconciler configuration
 // from the environment, the project config and this command's flags. It is
 // separate from runReconcile so the CLI/daemon parity test can build a config
 // without running a reconciliation, and it returns errors instead of calling
 // ui.Fatal for the same reason.
 func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
+	return buildReconcileConfigWith(reconcileFlagInputs{
+		dryRun: reconcileDryRun,
+		force:  reconcileForce,
+		local:  reconcileLocal,
+		remote: reconcileRemote,
+	})
+}
+
+// buildReconcileConfigWith is buildReconcileConfigFromEnv over explicit flag
+// values.
+func buildReconcileConfigWith(flags reconcileFlagInputs) (*reconcile.Config, error) {
 	cfg := reconcile.DefaultConfig()
 
 	// Required: repo URL. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
@@ -245,12 +269,12 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if target := os.Getenv("DEPLOY_TARGET"); target != "" {
 		cfg.TargetHost = target
 	}
-	if reconcileRemote != "" {
-		cfg.TargetHost = reconcileRemote
+	if flags.remote != "" {
+		cfg.TargetHost = flags.remote
 	}
 
 	// Force local mode if --local flag is set.
-	if reconcileLocal {
+	if flags.local {
 		cfg.DeployMode = "local"
 	}
 
@@ -259,7 +283,7 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if envBoolOrWarn("DRY_RUN") {
 		cfg.DryRun = true
 	}
-	if reconcileDryRun {
+	if flags.dryRun {
 		cfg.DryRun = true
 	}
 
@@ -268,7 +292,7 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if envBoolOrWarn("FORCE") {
 		cfg.Force = true
 	}
-	if reconcileForce {
+	if flags.force {
 		cfg.Force = true
 	}
 
@@ -556,29 +580,22 @@ func buildAlertManagerRaw() *alert.Manager {
 	slack := alert.NewSlackProvider(alertCfg.SlackWebhookURL)
 	mgr.AddProvider(slack)
 
-	// Add SendGrid provider.
-	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
-	if v := os.Getenv("BOSUN_SENDGRID_TO_EMAILS"); v != "" {
-		toEmails = filterEmptyStrings(strings.Split(v, ","))
-	}
+	// Add SendGrid provider. Recipients come from alertCfg like every other
+	// field: BOSUN_ variable, legacy variable, then bosun.yaml.
 	sendgrid := alert.NewSendGrid(alert.SendGridConfig{
 		APIKey:    alertCfg.SendGridAPIKey,
 		FromEmail: alertCfg.SendGridFromEmail,
 		FromName:  alertCfg.SendGridFromName,
-		ToEmails:  toEmails,
+		ToEmails:  alertCfg.SendGridToEmails,
 	})
 	mgr.AddProvider(sendgrid)
 
 	// Add Twilio provider.
-	toNumbers := filterEmptyStrings(strings.Split(os.Getenv("TWILIO_TO_NUMBERS"), ","))
-	if v := os.Getenv("BOSUN_TWILIO_TO_NUMBERS"); v != "" {
-		toNumbers = filterEmptyStrings(strings.Split(v, ","))
-	}
 	twilio := alert.NewTwilio(alert.TwilioConfig{
 		AccountSID: alertCfg.TwilioAccountSID,
 		AuthToken:  alertCfg.TwilioAuthToken,
 		FromNumber: alertCfg.TwilioFromNumber,
-		ToNumbers:  toNumbers,
+		ToNumbers:  alertCfg.TwilioToNumbers,
 	})
 	mgr.AddProvider(twilio)
 
@@ -591,16 +608,4 @@ func buildAlertManagerRaw() *alert.Manager {
 	mgr.AddProvider(webhook)
 
 	return mgr
-}
-
-// filterEmptyStrings removes empty strings from a slice.
-func filterEmptyStrings(ss []string) []string {
-	result := make([]string, 0, len(ss))
-	for _, s := range ss {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			result = append(result, s)
-		}
-	}
-	return result
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/lock"
 	"github.com/cameronsjo/bosun/internal/manifest"
+	"github.com/cameronsjo/bosun/internal/snapshot"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -218,11 +219,32 @@ func runProvision(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = provisionLock.Release() }()
 
-	if err := manifest.WriteOutputs(output, cfg.OutputDir(), outputName); err != nil {
-		return fmt.Errorf("write outputs: %w", err)
+	if err := writeProvisionOutputs(cfg, output, outputName); err != nil {
+		return err
 	}
 
 	_, _ = ui.Green.Printf("Successfully provisioned %s\n", outputName)
+	return nil
+}
+
+// createSnapshot snapshots the current output; a package var for fault injection.
+var createSnapshot = snapshot.Create
+
+// writeProvisionOutputs snapshots the current output, then overwrites it.
+// `bosun mayday` promises a rollback point before every provision, so a
+// failed snapshot stops the write rather than overwriting without one.
+func writeProvisionOutputs(cfg *config.Config, output *manifest.RenderOutput, name string) error {
+	snapName, err := createSnapshot(cfg.ManifestDir)
+	if err != nil {
+		return fmt.Errorf("snapshot current output before provision: %w", err)
+	}
+	if snapName != "" {
+		ui.Snapshot("Snapshot saved: %s", snapName)
+	}
+
+	if err := manifest.WriteOutputs(output, cfg.OutputDir(), name); err != nil {
+		return fmt.Errorf("write outputs: %w", err)
+	}
 	return nil
 }
 
@@ -379,27 +401,27 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 func generateServiceTemplate(template, name string) string {
 	templates := map[string]string{
-		"webapp": `name: %s
+		"webapp": `name: {{name}}
 provisions:
   - webapp
 config:
   port: 8080
-  domain: %s.example.com
+  domain: {{name}}.example.com
 `,
-		"api": `name: %s
+		"api": `name: {{name}}
 provisions:
   - api
 config:
   port: 8080
   health_path: /health
 `,
-		"worker": `name: %s
+		"worker": `name: {{name}}
 provisions:
   - worker
 config:
   replicas: 1
 `,
-		"static": `name: %s
+		"static": `name: {{name}}
 provisions:
   - static
 config:
@@ -407,7 +429,9 @@ config:
 `,
 	}
 
-	return fmt.Sprintf(templates[template], name, name)
+	// Named placeholders, not fmt verbs: a template that uses the name once
+	// cannot leave an unconsumed argument behind.
+	return strings.ReplaceAll(templates[template], "{{name}}", name)
 }
 
 func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error {

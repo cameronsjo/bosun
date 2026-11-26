@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -81,6 +82,12 @@ type Config struct {
 	// When WebhookSecret is empty, trigger endpoints reject every request
 	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
 	AllowUnauthenticatedWebhook bool
+
+	// WebhookSecretConflict records that WEBHOOK_SECRET and
+	// GITHUB_WEBHOOK_SECRET are both set to different values (#794). Trigger
+	// endpoints then reject every request with 403, and the opt-out above does
+	// not apply: the operator configured auth, just ambiguously.
+	WebhookSecretConflict bool
 
 	// MetricsToken is a read-scope credential for /metrics and /api/widget
 	// (BOSUN_METRICS_TOKEN). It is SEPARATE from BearerToken: the TCP bearer
@@ -235,6 +242,11 @@ type Daemon struct {
 	// behavior without running the full deploy pipeline.
 	triggerReconcileFn func(context.Context, string, bool) error
 
+	// apiWriteDeadlines overrides the TCP API's response-deadline policy. Nil
+	// means the production defaults; tests set a sub-second policy so a fast
+	// handler can tell which routes extend their deadline and by which factor.
+	apiWriteDeadlines *apiWriteDeadlinePolicy
+
 	// Reconcile state (read frequently for health checks)
 	stateMu       sync.RWMutex
 	lastReconcile time.Time
@@ -259,16 +271,33 @@ type Daemon struct {
 	targetRuntime   map[string]targetRuntimeStatus
 
 	// Concurrency control: single-flight reconcile with lossless coalescing.
-	reconcileMu                   sync.Mutex          // Guards reconcile execution and pending trigger state
+	// reconcileMu guards the admission flags and pending trigger state below.
+	// It is held only to read or change them, never across Docker, state-file,
+	// or alert I/O, so status handlers and trigger producers never wait on it
+	// for longer than a flag check (#793).
+	reconcileMu                   sync.Mutex
 	reconciling                   bool                // True while reconcile is in progress
 	pendingTriggerCount           uint64              // Number of triggers queued for the next coalesced run
 	pendingTriggerSources         map[string]struct{} // Distinct sources contributing to the next run
 	pendingTriggerForce           bool                // Sticky force flag for the next run
 	pendingForceRedeployUnchanged bool                // Preserve drift-self-heal semantics through source aggregation
 
-	// driftCheckMu serializes the drift state file's load-mutate-save cycle.
-	// The periodic loop is single-threaded, but tests and future callers may invoke
-	// runDriftCheck concurrently.
+	// drifting is true while a periodic drift cycle owns the deploy state
+	// files. Reconcile and drift both load, mutate, and save those files, so
+	// they never run at once: drift skips while reconciling, and a trigger
+	// that arrives during a drift cycle waits for driftDone before admission.
+	drifting bool
+	// driftDone is non-nil while drifting and is closed when the cycle ends.
+	driftDone chan struct{}
+	// reconcileWaiters counts triggers waiting for a drift cycle to end. Drift
+	// admission skips while it is non-zero so a cycle that outlasts the drift
+	// interval cannot re-enter ahead of a waiting trigger.
+	reconcileWaiters int
+
+	// driftCheckMu serializes runDriftCheck callers before drift admission.
+	// The periodic loop is single-threaded, but tests and future callers may
+	// invoke runDriftCheck concurrently. Lock order: driftCheckMu, then
+	// reconcileMu.
 	driftCheckMu sync.Mutex
 
 	// configMu guards daemon-level config fields that are hot-reloaded from bosun.yaml.
@@ -353,9 +382,18 @@ func New(cfg *Config) (*Daemon, error) {
 // warnWebhookAuthPosture announces the webhook auth posture at startup (#345):
 // fail-closed is the default, so a secret-less upgrade must never be a silent
 // 403, and an opted-out daemon must never hide its exposure. No-op when HTTP
-// is disabled or a secret is configured.
+// is disabled or a secret is configured. A secret conflict (#794) is an error,
+// not a warning: auth was configured, and every trigger will be refused.
 func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
-	if !d.config.EnableHTTP || d.config.WebhookSecret != "" {
+	if !d.config.EnableHTTP {
+		return
+	}
+	if d.config.WebhookSecretConflict {
+		logger.Error().Msg(WebhookSecretConflictMessage)
+		ui.Error("Webhooks fail closed: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET differ, trigger requests will be rejected (403)")
+		return
+	}
+	if WebhookSecretConfigured(d.config.WebhookSecret) {
 		return
 	}
 	if d.config.AllowUnauthenticatedWebhook {
@@ -569,36 +607,48 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	ctx = d.resetLifecycleContext(ctx)
 	defer d.cancelLifecycle()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	sigCh, stopSignals := notifyShutdown(syscall.SIGTERM, syscall.SIGINT)
+	defer stopSignals()
 
 	// Error channel for goroutines
 	errCh := make(chan error, 3)
 
+	// The server goroutines join d.wg, which shutdown waits on after the
+	// servers stop, so on a shutdown that finishes within ShutdownTimeout none
+	// of them logs after Run returns (a server whose Shutdown times out can
+	// still log late). Each Start returns http.ErrServerClosed after a graceful
+	// Shutdown; that is not a failure.
+
 	// Start Unix socket server (primary API)
 	logger.Info().Str("socket", d.config.SocketPath).Msg("Preparing to start Unix socket server")
+	d.wg.Add(1)
 	go func() {
+		defer d.wg.Done()
 		defer sentrypkg.Recover()
-		if err := d.socketServer.Start(); err != nil {
+		startErr := d.socketServer.Start()
+		if err := serverExitError("socket server", startErr); err != nil {
 			logger.Error().
-				Err(err).
+				Err(startErr).
 				Str("socket", d.config.SocketPath).
 				Msg("Failed to start Unix socket server")
-			errCh <- fmt.Errorf("socket server: %w", err)
+			errCh <- err
 		}
 	}()
 
 	// Start TCP server for remote access (optional)
 	if d.config.EnableTCP && d.tcpServer != nil {
 		logger.Info().Str("addr", d.config.TCPAddr).Msg("Preparing to start TCP server")
+		d.wg.Add(1)
 		go func() {
+			defer d.wg.Done()
 			defer sentrypkg.Recover()
-			if err := d.tcpServer.Start(); err != nil {
+			startErr := d.tcpServer.Start()
+			if err := serverExitError("TCP server", startErr); err != nil {
 				logger.Error().
-					Err(err).
+					Err(startErr).
 					Str("addr", d.config.TCPAddr).
 					Msg("Failed to start TCP server")
-				errCh <- fmt.Errorf("TCP server: %w", err)
+				errCh <- err
 			}
 		}()
 	}
@@ -606,14 +656,17 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	// Start HTTP server for webhooks (optional)
 	if d.config.EnableHTTP && d.httpServer != nil {
 		logger.Info().Int("port", d.config.Port).Msg("Preparing to start HTTP server")
+		d.wg.Add(1)
 		go func() {
+			defer d.wg.Done()
 			defer sentrypkg.Recover()
-			if err := d.httpServer.Start(d.config.Port); err != nil {
+			startErr := d.httpServer.Start(d.config.Port)
+			if err := serverExitError("HTTP server", startErr); err != nil {
 				logger.Error().
-					Err(err).
+					Err(startErr).
 					Int("port", d.config.Port).
 					Msg("Failed to start HTTP server")
-				errCh <- fmt.Errorf("HTTP server: %w", err)
+				errCh <- err
 			}
 		}()
 	}
@@ -779,6 +832,25 @@ func (d *Daemon) runTriggerReconcile(ctx context.Context, source string, force b
 		return d.triggerReconcileFn(ctx, source, force)
 	}
 	return d.TriggerReconcile(ctx, source, force)
+}
+
+// serverExitError reports whether a server's Start/Serve return is a real
+// failure. A nil return and http.ErrServerClosed (what Serve returns after a
+// graceful Shutdown) are not; anything else is named and wrapped.
+func serverExitError(name string, err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", name, err)
+}
+
+// notifyShutdown registers a channel for the given signals and returns it with a
+// stop func that unregisters it. The caller defers stop so the channel does not
+// stay registered, and keep swallowing the signals, after the caller returns.
+func notifyShutdown(sigs ...os.Signal) (<-chan os.Signal, func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, sigs...)
+	return ch, func() { signal.Stop(ch) }
 }
 
 // shutdown performs graceful shutdown of all components.
@@ -971,6 +1043,38 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 
 	d.reconcileMu.Lock()
 
+	// A drift cycle owns the state files. Wait for it outside the mutex, as a
+	// counted waiter so the next drift tick cannot re-enter ahead of this
+	// trigger. The decrement and the admission decision below share one
+	// critical section, so no drift cycle can start in between.
+	for d.drifting {
+		done := d.driftDone
+		d.reconcileWaiters++
+		d.reconcileMu.Unlock()
+
+		logger.Debug().
+			Str(log.FieldSource, source).
+			Msg("Drift check in progress, waiting before reconcile admission")
+
+		var waitErr error
+		select {
+		case <-done:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+
+		d.reconcileMu.Lock()
+		d.reconcileWaiters--
+		if waitErr != nil {
+			d.reconcileMu.Unlock()
+			logger.Warn().
+				Err(waitErr).
+				Str(log.FieldSource, source).
+				Msg("Abandoned reconcile trigger while waiting for drift check to finish")
+			return fmt.Errorf("wait for drift check before reconcile from %s: %w", source, waitErr)
+		}
+	}
+
 	if d.reconciling {
 		// Another reconcile is in progress. Count every arrival and retain all
 		// distinct source metadata for the next coalesced run.
@@ -995,19 +1099,9 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 		Bool("force", force).
 		Msg("Dispatching reconciliation")
 
-	// Run the reconcile loop (may run multiple times if pending triggers arrive).
-	err := d.reconcileLoop(ctx, trigger, d.executeReconcileTrigger)
-
-	// Readiness reflects "has ever successfully reconciled" (#346), not just
-	// "the initial boot reconcile succeeded" -- flip it here, the single
-	// choke point every trigger path (startup, poll, webhook, socket, tcp,
-	// api, drift-self-heal) runs through, so a later successful reconcile
-	// can recover the daemon from a failed initial boot reconcile too.
-	if err == nil {
-		d.setReady(true)
-	}
-
-	return err
+	// Run the reconcile loop (may run multiple times if pending triggers
+	// arrive). reconcileLoop flips readiness after each successful cycle.
+	return d.reconcileLoop(ctx, trigger, d.executeReconcileTrigger)
 }
 
 // reconcileCycle executes one reconcile using the trigger metadata selected for
@@ -1027,6 +1121,15 @@ func (d *Daemon) reconcileLoop(ctx context.Context, trigger reconcileTrigger, ex
 		err := d.runReconcileCycleSafely(ctx, trigger, execute)
 		if err != nil {
 			lastErr = err
+		} else {
+			// Readiness reflects "has ever successfully reconciled" (#346), not
+			// "the initial boot reconcile succeeded" and not the loop's
+			// aggregate error. Flip it per cycle here, the single choke point
+			// every trigger path (startup, poll, webhook, socket, tcp, api,
+			// drift-self-heal) runs through: a coalesced cycle that succeeds
+			// after an earlier failed one recovers the daemon (#797), and so
+			// does a later trigger after a failed initial boot reconcile.
+			d.setReady(true)
 		}
 
 		// Check and drain pending triggers while holding the same mutex that
@@ -1393,18 +1496,32 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	defer d.driftCheckMu.Unlock()
 
 	// Reconciliation and drift checking both load, mutate, and save the same
-	// state file. Hold their shared admission mutex for the complete drift cycle
-	// so a reconcile cannot begin after this one-time busy check and overwrite
-	// drift, breaker, or self-heal state with a stale snapshot.
+	// state file. Claim drift admission for the complete cycle so a reconcile
+	// cannot begin mid-cycle and overwrite drift, breaker, or self-heal state
+	// with a stale snapshot. The claim is a flag, not a held mutex: status
+	// handlers and trigger producers only take reconcileMu for a flag check
+	// (#793). A waiting trigger keeps drift out so a cycle that outlasts the
+	// drift interval cannot re-enter ahead of it.
 	d.reconcileMu.Lock()
-	if d.reconciling {
+	if d.reconciling || d.reconcileWaiters > 0 {
+		reason := "reconciliation_in_progress"
+		if !d.reconciling {
+			reason = "reconcile_trigger_waiting"
+		}
+		waiters := d.reconcileWaiters
 		d.reconcileMu.Unlock()
 		logger.Debug().
-			Str("reason", "reconciliation_in_progress").
+			Str("reason", reason).
+			Int("waiting_triggers", waiters).
 			Msg("Skipping drift check")
 		return
 	}
-	defer d.reconcileMu.Unlock()
+	d.drifting = true
+	d.driftDone = make(chan struct{})
+	d.reconcileMu.Unlock()
+	// Deferred so a panic cannot leave drift admission claimed: driftCheckLoop
+	// recovers panics, and a stuck flag would hold every later reconcile.
+	defer d.endDriftCycle()
 
 	targets, err := d.targetSnapshot()
 	if err != nil {
@@ -1442,9 +1559,20 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	}
 }
 
+// endDriftCycle releases drift admission and wakes triggers that waited for it.
+func (d *Daemon) endDriftCycle() {
+	d.reconcileMu.Lock()
+	defer d.reconcileMu.Unlock()
+	d.drifting = false
+	if d.driftDone != nil {
+		close(d.driftDone)
+		d.driftDone = nil
+	}
+}
+
 // runDriftCheckForTarget performs the canonical drift and restart-breaker
-// update for one local target. The caller owns driftCheckMu and reconcileMu so
-// sibling state files are updated under one daemon admission boundary.
+// update for one local target. The caller owns driftCheckMu and drift
+// admission so sibling state files are updated under one admission boundary.
 func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Target, client *docker.Client) {
 	logger := log.Component(log.ComponentDaemon).With().Str("target", target.Name).Logger()
 	targetCfg := d.configForTarget(target)
@@ -1484,9 +1612,14 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		ignoreRules = targetCfg.DriftIgnore.Value
 	}
 
+	// Load the state file once per tick: the drift comparison and the
+	// load-mutate-save below share this snapshot (#793).
+	state := reconcile.LoadState(stateFile)
+	previouslyDrifted := len(state.DriftItems) > 0
+
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
 	checkCtx, otelDriftSpan := telemetry.Tracer("daemon").Start(checkCtx, "daemon.drift_check")
-	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName, ignoreRules)
+	report, actual, err := reconcile.RunDriftCheckWithState(checkCtx, client, state, projectName, ignoreRules)
 	finishSpan(err)
 	if err != nil {
 		telemetry.SpanError(otelDriftSpan, err)
@@ -1498,9 +1631,32 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	telemetry.SpanOK(otelDriftSpan)
 	otelDriftSpan.End()
 
-	// Load previous state to detect drift resolution.
-	state := reconcile.LoadState(stateFile)
-	previouslyDrifted := len(state.DriftItems) > 0
+	// A dry run observes only (#792). This gate sits after detection and before
+	// the first mutation; do not move it to the top of the function, which would
+	// drop detection, logging, and the observation. Everything after it mutates: it
+	// saves the state file, may stop a restart-looping container, consumes a
+	// self-heal attempt and triggers a reconcile, and alerts. None of it belongs
+	// to a daemon whose contract is "no actual changes", and its dedup and
+	// throttle state could not persist anyway, so alerts would repeat every tick.
+	// The gate is the tick's one dry-run check, ahead of those steps, so a change
+	// to what the breaker or self-heal do cannot reopen it. Detection, logging,
+	// metrics, and the observation that status views read stay. The observation
+	// is kept in memory, because the persisted drift fields are frozen under a
+	// dry run: status views serve this report instead, so one target record never
+	// pairs a fresh status with stale items.
+	if targetCfg.DryRun {
+		if d.metrics != nil {
+			d.metrics.RecordDriftCheck(report.HasDrift())
+		}
+		logDriftDetected(logger, report)
+		driftStatus := driftStatusLabel(report)
+		logger.Info().
+			Str("drift_status", driftStatus).
+			Msg("Dry run: drift observed only. Not saving state, running the restart breaker, self-healing, or alerting")
+		d.recordObservedDrift(target.Name, report)
+		d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
+		return
+	}
 
 	// Stage drift results — save happens after alert dedup updates the state.
 	state.DriftCheckedAt = report.CheckedAt
@@ -1533,11 +1689,15 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		d.metrics.RecordDriftCheck(report.HasDrift())
 	}
 
+	// A resolution alert can only be sent when an alerter exists and the
+	// operator has not turned resolution alerts off. When it cannot, resolved
+	// keys are still retired from the alerted state (openspec alerting spec,
+	// "Resolution alerts disabled"): a stale key would otherwise suppress the
+	// next real alert for that service inside the cooldown and skip debounce.
+	sendResolved := d.alerter != nil && d.config.DriftResolveAlerts
+
 	if report.HasDrift() {
-		logger.Warn().
-			Int("drift_items", len(report.Items)).
-			Strs("drift_containers", report.DriftSummaries()).
-			Msg("Drift detected during periodic check")
+		logDriftDetected(logger, report)
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).
 		// Always run cleanup when alerting is enabled so resolved items are cleared
@@ -1604,7 +1764,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 
 			// Resolution alerts: only fire for items that were previously alerted.
 			// Skip items still in debounce (never alerted).
-			if len(resolvedKeys) > 0 && d.config.DriftResolveAlerts {
+			if len(resolvedKeys) > 0 && sendResolved {
 				var actuallyResolved []string
 				for _, key := range resolvedKeys {
 					if _, inDebounce := state.DriftDebounceItems[key]; inDebounce {
@@ -1633,6 +1793,10 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 				}
 			}
 		}
+
+		if !sendResolved {
+			retireResolvedDriftKeys(logger, state, unfilteredCriticalItems, d.alerter == nil)
+		}
 	} else {
 		// No drift — clean up debounce items and check if we need to send resolution alerts.
 		if len(state.DriftDebounceItems) > 0 {
@@ -1652,7 +1816,14 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 			logger.Debug().Msg("Drift check: no drift detected")
 		}
 
-		if len(state.DriftAlertedItems) > 0 && d.alerter != nil && d.config.DriftResolveAlerts {
+		if len(state.DriftAlertedItems) > 0 && !sendResolved {
+			// Nothing can announce the resolution, so retire every alerted key now.
+			logger.Debug().
+				Int("items", len(state.DriftAlertedItems)).
+				Bool("no_alerter", d.alerter == nil).
+				Msg("Drift resolved: retiring alerted items without a resolution alert")
+			state.DriftAlertedItems = nil
+		} else if len(state.DriftAlertedItems) > 0 {
 			var resolvedKeys []string
 			for key := range state.DriftAlertedItems {
 				resolvedKeys = append(resolvedKeys, key)
@@ -1677,7 +1848,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 
 	// Restart circuit breaker: detect containers in restart loops and stop them.
 	if targetCfg.RestartBreakerEnabled {
-		d.runRestartBreaker(checkCtx, client, state, projectName, restartBreakerTarget{
+		d.runRestartBreaker(checkCtx, client, state, actual, projectName, restartBreakerTarget{
 			config: targetCfg,
 			name:   targetContext(target),
 		})
@@ -1716,13 +1887,46 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		return
 	}
 
-	driftStatus := "clean"
-	if report.HasDrift() {
-		driftStatus = "drifted"
-	}
-	d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
+	d.recordTargetRuntime(target.Name, driftStatusLabel(report), "", report.CheckedAt)
 
 	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation, targetContext(target))
+}
+
+// driftStatusLabel is the per-target status string the status views report for
+// a completed drift check.
+func driftStatusLabel(report *reconcile.DriftReport) string {
+	if report.HasDrift() {
+		return "drifted"
+	}
+	return "clean"
+}
+
+// retireResolvedDriftKeys drops alerted (and debounce) keys whose service has no
+// drift left in activeItems, without sending anything. It runs when no
+// resolution alert can be sent, so a resolved key cannot linger in the state
+// file and suppress the next real alert inside the cooldown.
+func retireResolvedDriftKeys(logger zerolog.Logger, state *reconcile.DeployState, activeItems []reconcile.DriftItem, noAlerter bool) {
+	resolved := reconcile.ResolvedDriftAlertKeys(activeItems, state.DriftAlertedItems)
+	if len(resolved) == 0 {
+		return
+	}
+	for _, key := range resolved {
+		delete(state.DriftAlertedItems, key)
+		delete(state.DriftDebounceItems, key)
+	}
+	logger.Debug().
+		Strs("items", resolved).
+		Bool("no_alerter", noAlerter).
+		Msg("Retired resolved drift alert state without a resolution alert")
+}
+
+// logDriftDetected logs a detected drift once, for both the acting tick and the
+// dry-run observation, so the two cannot drift apart.
+func logDriftDetected(logger zerolog.Logger, report *reconcile.DriftReport) {
+	logger.Warn().
+		Int("drift_items", len(report.Items)).
+		Strs("drift_containers", report.DriftSummaries()).
+		Msg("Drift detected during periodic check")
 }
 
 func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
@@ -1816,8 +2020,12 @@ type restartBreakerTarget struct {
 	name   string
 }
 
-// runRestartBreaker checks running containers for restart loops and stops offenders.
-func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string, options ...restartBreakerTarget) {
+// runRestartBreaker checks running containers for restart loops and stops
+// offenders. actual is the drift check's container snapshot from this tick;
+// RunRestartBreaker re-inspects every candidate by name, re-checks Compose
+// ownership, and stops by the inspected ID, so reusing the snapshot widens
+// nothing. A container created after the snapshot is evaluated next tick.
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, actual []reconcile.ActualService, projectName string, options ...restartBreakerTarget) {
 	logger := log.Component(log.ComponentDaemon)
 	logger.Debug().
 		Str("project", projectName).
@@ -1831,15 +2039,6 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 		if options[0].name != "" {
 			targetName = options[0].name
 		}
-	}
-
-	actual, err := reconcile.CollectActualState(ctx, client, projectName)
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Str("project", projectName).
-			Msg("Failed to collect container state for restart breaker")
-		return
 	}
 
 	// The breaker re-checks each candidate's Compose labels against this scope
@@ -2360,10 +2559,7 @@ func ConfigFromEnv() *Config {
 	}
 	cfg.BearerToken = os.Getenv("BOSUN_BEARER_TOKEN")
 
-	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
-	if secret := os.Getenv("GITHUB_WEBHOOK_SECRET"); secret != "" {
-		cfg.WebhookSecret = secret
-	}
+	cfg.WebhookSecret, cfg.WebhookSecretConflict = ResolveWebhookSecret(os.Getenv)
 
 	// Read-scope credential for /metrics and /api/widget (#296), separate from
 	// the control bearer. AllowUnauthenticatedMetrics uses the same strict
@@ -2406,8 +2602,15 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
-	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
-		cfg.PollInterval = d
+	// Poll interval (0 disables polling). Read the variable's presence, not just
+	// a positive value: an explicit 0 must reach PollInterval like the
+	// BOSUN_DRIFT_INTERVAL=0 case does.
+	if v := config.BosunEnv("POLL_INTERVAL"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok && d >= 0 {
+			cfg.PollInterval = d
+		} else {
+			log.Warn().Str("env", "POLL_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid or negative duration")
+		}
 	}
 
 	// Reconcile config from environment

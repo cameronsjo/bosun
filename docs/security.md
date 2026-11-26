@@ -607,6 +607,36 @@ point the override at their location. For `bosun render`, the infra directory is
 the discovered project root plus `BOSUN_INFRA_DIR`; outside a Bosun project it
 is the current directory.
 
+### Template Function Allowlist
+
+**Implementation**: `internal/reconcile/template_funcs.go`, shared by
+reconciliation and `bosun render`.
+
+Templates are offered an explicit allowlist of Sprig functions: Sprig's text
+function map minus `env`, `expandenv`, and `getHostByName`. The daemon's
+environment carries the Git token, API bearer tokens, alert credentials, and
+often the age key, and rendered files are written `0644`, so `env` or
+`expandenv` would let any template in the repository copy those values into
+deployed output. `getHostByName` would let a template make DNS lookups during a
+reconcile. A template that calls one of these fails to parse, and no output file
+is written for it. A function added by a later Sprig release is not offered
+until it is reviewed into the list; a golden test fails on the upgrade until it
+is. Read template values from the data context (`{{ .apps.myapp.db_password }}`)
+instead of the environment.
+
+**Scope**: this closes the Sprig route from templates to the process
+environment. It is not an isolation boundary between the repository and the
+daemon. Other routes remain:
+
+- Compose `${VAR}` interpolation runs with the daemon's environment on local
+  deploys.
+- Repository-defined hooks run commands the repository chooses, as the daemon's
+  user.
+- An include root that covers `/proc` (for example a `template_include_dir` or
+  `BOSUN_TEMPLATE_INCLUDE_DIR` of `/` or `/proc`) lets `include` read
+  `/proc/<pid>/environ`. Keep the include root a dedicated subtree such as the
+  default `<infraDir>/templates`.
+
 ### Template Rendering Scope
 
 The template renderer walks the entire cloned repository directory for `.tmpl` files. Non-template files are only copied from the infrastructure subdirectory. This means a `.tmpl` file placed outside the expected path will still be rendered, potentially producing unexpected output files.
@@ -630,7 +660,13 @@ The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependen
 The daemon's HTTP trigger endpoints (`/webhook`, `/webhook/github`,
 `/webhook/manual`) authenticate requests with an HMAC-SHA256 signature over the
 request body, validated with constant-time comparison against `WEBHOOK_SECRET`
-(GitHub convention: `X-Hub-Signature-256`; generic/manual: `X-Signature`).
+(GitHub convention: `X-Hub-Signature-256`; manual: `X-Signature`; generic: the
+header list below).
+
+The signature covers the whole body, so the body is read whole or not at all:
+both the daemon and the `bosun webhook` receiver refuse a body over 1 MiB with
+`413` and start no reconcile. Truncating it instead would let authorization
+and the branch filter judge a partial payload.
 
 **Webhook auth fails closed.** When no webhook secret is configured, every
 trigger request is rejected with `403` and no reconcile runs. This is the
@@ -648,6 +684,33 @@ other escape hatches). With the opt-out active:
 
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
+
+**One secret, resolved one way.** The daemon, the `bosun webhook` receiver, and
+`bosun validate` resolve the secret in one order: `--secret` (receiver only),
+then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET`. Two cases fail closed:
+
+- A placeholder is public and counts as no secret: `change-me`, which older
+  starter compose files shipped as a default, in any case and with
+  surrounding whitespace, and the example value the `bosun init` env template
+  writes. A deployment still using it gets
+  the fail-closed `403` above unless the opt-out is set.
+- `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` set to different values reject
+  every trigger with `403`, **even with the opt-out set**, and both servers log
+  an error at startup and per request naming the two variables (never their
+  values). No sender can know which secret to sign with, so neither is picked.
+  `bosun validate` reports it as an error. The daemon also reports the
+  conflict in its socket `GET /config` answer, so a receiver using
+  `--fetch-secret` fails closed the same way, whatever its own opt-out says.
+
+**Upgrade the daemon and the `bosun webhook` receiver together.** A receiver
+built before this change ignores the daemon's conflict flag, so against a
+daemon in conflict it reads the empty secret as none and, with its own opt-out
+set, would accept unsigned triggers.
+
+The generic `/webhook` on both servers reads its HMAC from the first non-empty
+of `X-Signature`, `X-Hub-Signature-256`, `X-Signature-256` (a header sent empty
+is skipped); a later valid header never rescues an invalid earlier one. `/webhook/github` reads only
+`X-Hub-Signature-256` and `/webhook/manual` only `X-Signature`.
 
 **The standalone `bosun webhook` receiver fails closed the same way.** It
 forwards to the daemon over the Unix socket, which authorizes by peer
@@ -688,6 +751,23 @@ request headers and set a 32 KiB request-header parsing limit. These
 pre-handler limits reduce exposure to slow-header and oversized-header
 denial-of-service attacks without changing the existing per-operation
 `BOSUN_API_TIMEOUT` behavior.
+
+The TCP API's response write deadline is 30 seconds, and it starts when the
+request headers are read, so handler time counts against it. The three
+bearer-authenticated routes that run under `BOSUN_API_TIMEOUT` (container list,
+container logs, container restart) extend their own response deadline to their
+handler budget plus 5 seconds: `BOSUN_API_TIMEOUT` for list and logs, twice that
+for restart, never below the 30-second default and never above 10 minutes. Every
+other route, including the unauthenticated `/health`, keeps the 30-second
+deadline. A slow-reading authenticated client can therefore hold one of those
+three handlers for up to that long. The ceiling caps only the write deadline,
+not the handler's own context: with `BOSUN_API_TIMEOUT` above about 297 seconds
+(restart) or 595 seconds (list and logs), a response that is ready after the
+10-minute ceiling is cut off, as it was before the extension.
+
+On the TCP API and the Unix socket, idle keep-alive connections are bounded by
+the 10-second `ReadTimeout`, which `net/http` uses when `IdleTimeout` is unset.
+The webhook listener sets its own 60-second idle timeout.
 
 ### Unix socket publication and permissions
 

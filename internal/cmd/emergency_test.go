@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -237,6 +239,19 @@ func TestGetBackups(t *testing.T) {
 		assert.True(t, backups[0].HasTar)
 	})
 
+	t.Run("symlinked tar.gz is not reported as present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		backupDir := filepath.Join(tmpDir, "backup-2024-01-01")
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		target := filepath.Join(t.TempDir(), "configs.tar.gz")
+		require.NoError(t, os.WriteFile(target, []byte("fake"), 0644))
+		require.NoError(t, os.Symlink(target, filepath.Join(backupDir, "configs.tar.gz")))
+
+		backups, err := getBackups(tmpDir)
+		require.NoError(t, err)
+		assert.False(t, backups[0].HasTar)
+	})
+
 	t.Run("reports missing tar.gz", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-01"), 0755))
@@ -247,32 +262,46 @@ func TestGetBackups(t *testing.T) {
 	})
 }
 
-func TestExtractTarGz(t *testing.T) {
-	// Helper to create a valid .tar.gz with specified files.
+// writeTestTarGz writes a gzipped tar holding files (name → content) to path.
+func writeTestTarGz(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+	f, err := os.Create(path)
+	require.NoError(t, err)
+
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	for name, content := range files {
+		hdr := &tar.Header{
+			Name: name,
+			Mode: 0644,
+			Size: int64(len(content)),
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err := tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+	require.NoError(t, f.Close())
+}
+
+// extractTestTarGz opens path and extracts it with extractTarGzFrom.
+func extractTestTarGz(t *testing.T, path, destDir string) error {
+	t.Helper()
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	return extractTarGzFrom(f, destDir)
+}
+
+func TestExtractTarGzFrom(t *testing.T) {
 	createTarGz := func(t *testing.T, files map[string]string) string {
 		t.Helper()
 		tarPath := filepath.Join(t.TempDir(), "test.tar.gz")
-		f, err := os.Create(tarPath)
-		require.NoError(t, err)
-
-		gw := gzip.NewWriter(f)
-		tw := tar.NewWriter(gw)
-
-		for name, content := range files {
-			hdr := &tar.Header{
-				Name: name,
-				Mode: 0644,
-				Size: int64(len(content)),
-			}
-			require.NoError(t, tw.WriteHeader(hdr))
-			_, err := tw.Write([]byte(content))
-			require.NoError(t, err)
-		}
-
-		_ = tw.Close()
-		_ = gw.Close()
-		_ = f.Close()
-
+		writeTestTarGz(t, tarPath, files)
 		return tarPath
 	}
 
@@ -282,7 +311,7 @@ func TestExtractTarGz(t *testing.T) {
 		})
 		destDir := t.TempDir()
 
-		err := extractTarGz(tarPath, destDir)
+		err := extractTestTarGz(t, tarPath, destDir)
 		require.NoError(t, err)
 
 		content, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
@@ -297,7 +326,7 @@ func TestExtractTarGz(t *testing.T) {
 		})
 		destDir := t.TempDir()
 
-		err := extractTarGz(tarPath, destDir)
+		err := extractTestTarGz(t, tarPath, destDir)
 		require.NoError(t, err)
 
 		content, err := os.ReadFile(filepath.Join(destDir, "a.txt"))
@@ -337,7 +366,7 @@ func TestExtractTarGz(t *testing.T) {
 		_ = f.Close()
 
 		destDir := t.TempDir()
-		err = extractTarGz(tarPath, destDir)
+		err = extractTestTarGz(t, tarPath, destDir)
 		require.NoError(t, err)
 
 		data, err := os.ReadFile(filepath.Join(destDir, "subdir", "file.txt"))
@@ -367,15 +396,150 @@ func TestExtractTarGz(t *testing.T) {
 		_ = f.Close()
 
 		destDir := t.TempDir()
-		err = extractTarGz(tarPath, destDir)
+		err = extractTestTarGz(t, tarPath, destDir)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid file path")
 	})
 
-	t.Run("rejects non-existent archive", func(t *testing.T) {
-		err := extractTarGz("/nonexistent/archive.tar.gz", t.TempDir())
+	t.Run("rejects a stream that is not gzip", func(t *testing.T) {
+		err := extractTarGzFrom(strings.NewReader("not gzip"), t.TempDir())
 		assert.Error(t, err)
 	})
+}
+
+// restoreFixture is a backup directory, an outside directory, and an appdata
+// target, with LOCAL_APPDATA pointed at the target.
+type restoreFixture struct {
+	backupDir string
+	outside   string
+	appdata   string
+}
+
+func newRestoreFixture(t *testing.T) restoreFixture {
+	t.Helper()
+	root := t.TempDir()
+	f := restoreFixture{
+		backupDir: filepath.Join(root, "backups"),
+		outside:   filepath.Join(root, "outside"),
+		appdata:   filepath.Join(root, "appdata"),
+	}
+	require.NoError(t, os.MkdirAll(f.backupDir, 0755))
+	require.NoError(t, os.MkdirAll(f.outside, 0755))
+	require.NoError(t, os.MkdirAll(f.appdata, 0755))
+	// The payload never carries compose/core.yml, so doRestore never runs
+	// docker compose in these tests.
+	writeTestTarGz(t, filepath.Join(f.outside, "configs.tar.gz"), map[string]string{"configs/x.yml": "restored"})
+	t.Setenv("LOCAL_APPDATA", f.appdata)
+	return f
+}
+
+func (f restoreFixture) restoredFile() string {
+	return filepath.Join(f.appdata, "configs", "x.yml")
+}
+
+func TestDoRestore_RejectsUnsafeSource(t *testing.T) {
+	tests := []struct {
+		name     string
+		backup   string
+		setup    func(t *testing.T, f restoreFixture)
+		wantText string
+	}{
+		{
+			name:     "parent escape",
+			backup:   "../outside",
+			setup:    func(*testing.T, restoreFixture) {},
+			wantText: "invalid name",
+		},
+		{
+			name:   "symlinked backup directory",
+			backup: "backup-link",
+			setup: func(t *testing.T, f restoreFixture) {
+				require.NoError(t, os.Symlink(f.outside, filepath.Join(f.backupDir, "backup-link")))
+			},
+			wantText: "backup not found",
+		},
+		{
+			name:   "unprefixed real directory",
+			backup: "manual",
+			setup: func(t *testing.T, f restoreFixture) {
+				writeTestTarGz(t, filepath.Join(f.backupDir, "manual", "configs.tar.gz"), map[string]string{"configs/x.yml": "restored"})
+			},
+			wantText: "invalid name",
+		},
+		{
+			name:   "symlinked archive",
+			backup: "backup-20240101-000000",
+			setup: func(t *testing.T, f restoreFixture) {
+				dir := filepath.Join(f.backupDir, "backup-20240101-000000")
+				require.NoError(t, os.MkdirAll(dir, 0755))
+				require.NoError(t, os.Symlink(filepath.Join(f.outside, "configs.tar.gz"), filepath.Join(dir, "configs.tar.gz")))
+			},
+			wantText: "open backup archive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRestoreFixture(t)
+			tt.setup(t, f)
+
+			err := doRestore(context.Background(), f.backupDir, tt.backup)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantText)
+			assert.NoFileExists(t, f.restoredFile())
+		})
+	}
+}
+
+func TestDoRestore_SourceFailures(t *testing.T) {
+	t.Run("backup directory cannot be listed", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		notDir := filepath.Join(f.outside, "not-a-dir")
+		require.NoError(t, os.WriteFile(notDir, nil, 0644))
+
+		err := doRestore(context.Background(), notDir, "backup-20240101-000000")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list backups")
+	})
+
+	t.Run("backup root cannot be opened", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		writeTestTarGz(t, filepath.Join(f.backupDir, "backup-20240101-000000", "configs.tar.gz"), map[string]string{"configs/x.yml": "restored"})
+		wantErr := errors.New("root open failed")
+		original := openBackupRoot
+		openBackupRoot = func(string) (*os.Root, error) { return nil, wantErr }
+		t.Cleanup(func() { openBackupRoot = original })
+
+		err := doRestore(context.Background(), f.backupDir, "backup-20240101-000000")
+
+		require.ErrorIs(t, err, wantErr)
+		assert.Contains(t, err.Error(), "open backup root")
+		assert.NoFileExists(t, f.restoredFile())
+	})
+
+	t.Run("listed backup without an archive", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(f.backupDir, "backup-20240101-000000"), 0755))
+
+		err := doRestore(context.Background(), f.backupDir, "backup-20240101-000000")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backup incomplete")
+	})
+}
+
+func TestDoRestore_RestoresListedBackup(t *testing.T) {
+	f := newRestoreFixture(t)
+	writeTestTarGz(t, filepath.Join(f.backupDir, "backup-20240101-000000", "configs.tar.gz"), map[string]string{"configs/x.yml": "restored"})
+
+	err := doRestore(context.Background(), f.backupDir, "backup-20240101-000000")
+
+	require.NoError(t, err)
+	content, readErr := os.ReadFile(f.restoredFile())
+	require.NoError(t, readErr)
+	assert.Equal(t, "restored", string(content))
 }
 
 func TestListBackups(t *testing.T) {

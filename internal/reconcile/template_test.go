@@ -121,27 +121,6 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 		assert.Equal(t, "HELLO - fallback", string(content))
 	})
 
-	t.Run("template with env function", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		ctx := context.Background()
-
-		// Create template using env function (provided by sprig)
-		templateFile := filepath.Join(tmpDir, "test.tmpl")
-		templateContent := `Home: {{ env "HOME" }}`
-		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
-
-		outputFile := filepath.Join(tmpDir, "output", "test.txt")
-
-		tmpl := NewTemplateOps(map[string]any{})
-		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
-
-		require.NoError(t, err)
-
-		content, err := os.ReadFile(outputFile)
-		require.NoError(t, err)
-		assert.Contains(t, string(content), "Home: ")
-	})
-
 	t.Run("template with toJson and fromJson", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()

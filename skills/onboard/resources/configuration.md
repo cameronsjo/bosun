@@ -413,7 +413,7 @@ it disables verification on both channels.
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | Allow reconcile to continue when the staging compose dir contains no declared services (default: `false` — strict). Set to `true` for genuinely empty repos. The dir-missing case is always fatal. |
 | `BOSUN_SKIP_DEPLOY_INVARIANT` | Bypass the post-deploy created/written path existence, type, fresh-mtime, and no-file-write content checks (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |
-| `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`) |
+| `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`). Read before `GITHUB_WEBHOOK_SECRET`; `change-me` counts as unset; if both are set to different values every trigger is rejected with `403`, even with the opt-out |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Applies to daemon HTTP endpoints and the standalone webhook receiver. Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
 | `BOSUN_LISTEN_ADDR` | Host/IP the daemon HTTP server binds to (default: empty = all interfaces, so container-side callers like Traefik and Prometheus can reach it over the docker bridge) |
 | `SOPS_AGE_KEY_FILE` | Path to a regular, non-empty, parseable Age identity file (default: `~/.config/sops/age/keys.txt`); `SOPS_AGE_KEY` takes precedence. When secrets files are configured, daemon and one-shot startup validate the identity before Git, and the daemon binds no listeners on failure |
@@ -450,6 +450,8 @@ tunnel:
   health_endpoint: https://bosun.example.com/health
 ```
 
+`bosun radio status` and `bosun doctor` pass these three keys to the Cloudflare provider. With `tunnel_name` set, the status comes from `cloudflared tunnel info` (falling back to `health_endpoint` if that command fails); otherwise `health_endpoint` is requested and a `200` counts as connected; with neither, bosun looks for a running `cloudflared` process. `hostname` is the name shown in the status output.
+
 ## Alert Configuration
 
 Bosun can notify you when deployments succeed or fail.
@@ -475,6 +477,8 @@ alerts:
 ```
 
 Alerts include: deploy status, commit hash, changed files, error details (on failure), and duration.
+
+**Which source wins.** Every alert setting resolves the same way in the daemon, `bosun reconcile`, `bosun alert status` and `bosun alert test`: the `BOSUN_` environment variable (`BOSUN_SENDGRID_API_KEY`), then the legacy variable (`SENDGRID_API_KEY`), then `bosun.yaml`. Credentials, senders and recipients resolve on their own, so a key from the environment is used with the recipients in `bosun.yaml`. Recipient variables (`SENDGRID_TO_EMAILS`, `TWILIO_TO_NUMBERS` and their `BOSUN_` forms) are comma-separated; a value with no address in it counts as unset and falls through to the next source. `BOSUN_WEBHOOK_HEADERS` (a JSON object) applies only together with `BOSUN_WEBHOOK_URL`; with the URL from `bosun.yaml`, the headers come from `bosun.yaml` too, and Bosun logs a warning naming the variable when it drops them. An environment-only `BOSUN_WEBHOOK_HEADERS` used with a `bosun.yaml` URL is therefore no longer sent; set `BOSUN_WEBHOOK_URL` too, or move the headers into `webhook_headers`.
 
 Discord embeds are bounded to the provider's component limits and 6000-unit
 aggregate so verbose deploy errors remain deliverable. Twilio sends only error

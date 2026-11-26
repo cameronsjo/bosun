@@ -7,6 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// serviceWith builds a compose document with one service, "web", holding key.
+func serviceWith(key string, value any) map[string]any {
+	return map[string]any{
+		"services": map[string]any{
+			"web": map[string]any{key: value},
+		},
+	}
+}
+
 func TestDeepMerge(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -97,8 +106,163 @@ func TestDeepMerge(t *testing.T) {
 				"endpoints": []any{"ep2", "ep3"},
 			},
 			want: map[string]any{
-				"endpoints": []string{"ep1", "ep2", "ep3"},
+				"endpoints": []any{"ep1", "ep2", "ep3"},
 			},
+		},
+		{
+			name: "list extend endpoints keeps map elements",
+			base: map[string]any{
+				"endpoints": []any{
+					map[string]any{"name": "a", "url": "https://a.example.com"},
+				},
+			},
+			overlay: map[string]any{
+				"endpoints": []any{
+					map[string]any{"name": "b", "url": "https://b.example.com"},
+				},
+			},
+			want: map[string]any{
+				"endpoints": []any{
+					map[string]any{"name": "a", "url": "https://a.example.com"},
+					map[string]any{"name": "b", "url": "https://b.example.com"},
+				},
+			},
+		},
+		{
+			name:    "list extend endpoints string slice base",
+			base:    map[string]any{"endpoints": []string{"ep1"}},
+			overlay: map[string]any{"endpoints": []any{"ep2"}},
+			want:    map[string]any{"endpoints": []any{"ep1", "ep2"}},
+		},
+		{
+			name:    "service environment list plus list",
+			base:    serviceWith("environment", []any{"A=1"}),
+			overlay: serviceWith("environment", []any{"B=2"}),
+			want:    serviceWith("environment", map[string]any{"A": "1", "B": "2"}),
+		},
+		{
+			name:    "service environment list overlay wins on shared key",
+			base:    serviceWith("environment", []any{"A=base", "B=2"}),
+			overlay: serviceWith("environment", []any{"A=overlay"}),
+			want:    serviceWith("environment", map[string]any{"A": "overlay", "B": "2"}),
+		},
+		{
+			name:    "service environment map plus list",
+			base:    serviceWith("environment", map[string]any{"PORT": 8080, "B": "base"}),
+			overlay: serviceWith("environment", []any{"B=2", "C=3"}),
+			want:    serviceWith("environment", map[string]any{"PORT": "8080", "B": "2", "C": "3"}),
+		},
+		{
+			name:    "service environment list plus map",
+			base:    serviceWith("environment", []any{"A=1", "B=base"}),
+			overlay: serviceWith("environment", map[string]any{"B": "2"}),
+			want:    serviceWith("environment", map[string]any{"A": "1", "B": "2"}),
+		},
+		{
+			name:    "service environment string slice plus list",
+			base:    serviceWith("environment", []string{"A=1"}),
+			overlay: serviceWith("environment", []any{"B=2"}),
+			want:    serviceWith("environment", map[string]any{"A": "1", "B": "2"}),
+		},
+		{
+			name:    "service environment bare key passes through as nil",
+			base:    serviceWith("environment", []any{"FOO"}),
+			overlay: serviceWith("environment", []any{"B=2"}),
+			want:    serviceWith("environment", map[string]any{"FOO": nil, "B": "2"}),
+		},
+		{
+			name:    "service environment map nil value stays nil",
+			base:    serviceWith("environment", map[string]any{"FOO": nil}),
+			overlay: serviceWith("environment", map[string]any{"B": "2"}),
+			want:    serviceWith("environment", map[string]any{"FOO": nil, "B": "2"}),
+		},
+		{
+			name:    "service labels list plus list",
+			base:    serviceWith("labels", []any{"a.b=1"}),
+			overlay: serviceWith("labels", []any{"c.d=2"}),
+			want:    serviceWith("labels", map[string]any{"a.b": "1", "c.d": "2"}),
+		},
+		{
+			name:    "service labels map plus list",
+			base:    serviceWith("labels", map[string]any{"a.b": "1"}),
+			overlay: serviceWith("labels", []any{"c.d=2"}),
+			want:    serviceWith("labels", map[string]any{"a.b": "1", "c.d": "2"}),
+		},
+		{
+			name:    "service environment on one side only stays a list",
+			base:    serviceWith("image", "nginx"),
+			overlay: serviceWith("environment", []any{"B=2"}),
+			want: map[string]any{
+				"services": map[string]any{
+					"web": map[string]any{"image": "nginx", "environment": []any{"B=2"}},
+				},
+			},
+		},
+		{
+			name:    "service environment scalar overlay replaces",
+			base:    serviceWith("environment", []any{"A=1"}),
+			overlay: serviceWith("environment", "not-a-list"),
+			want:    serviceWith("environment", "not-a-list"),
+		},
+		{
+			name: "service name containing dots",
+			base: map[string]any{"services": map[string]any{
+				"my.app": map[string]any{"environment": []any{"A=1"}},
+			}},
+			overlay: map[string]any{"services": map[string]any{
+				"my.app": map[string]any{"environment": []any{"B=2"}},
+			}},
+			want: map[string]any{"services": map[string]any{
+				"my.app": map[string]any{"environment": map[string]any{"A": "1", "B": "2"}},
+			}},
+		},
+		{
+			// Out of scope control: user config and chart values keep list replace.
+			name:    "out of scope nested labels list is replaced",
+			base:    map[string]any{"app": map[string]any{"labels": []any{"a", "b"}}},
+			overlay: map[string]any{"app": map[string]any{"labels": []any{"c"}}},
+			want:    map[string]any{"app": map[string]any{"labels": []any{"c"}}},
+		},
+		{
+			name:    "out of scope top level environment list is replaced",
+			base:    map[string]any{"environment": []any{"A=1"}},
+			overlay: map[string]any{"environment": []any{"B=2"}},
+			want:    map[string]any{"environment": []any{"B=2"}},
+		},
+		{
+			// A map keyed directly by service name has trail [name], not [services, name].
+			name: "out of scope service map without services key is replaced",
+			base: map[string]any{
+				"web": map[string]any{"environment": []any{"A=1"}},
+			},
+			overlay: map[string]any{
+				"web": map[string]any{"environment": []any{"B=2"}},
+			},
+			want: map[string]any{
+				"web": map[string]any{"environment": []any{"B=2"}},
+			},
+		},
+		{
+			name: "out of scope deeper service labels list is replaced",
+			base: map[string]any{"services": map[string]any{"web": map[string]any{
+				"deploy": map[string]any{"labels": []any{"a=1"}},
+			}}},
+			overlay: map[string]any{"services": map[string]any{"web": map[string]any{
+				"deploy": map[string]any{"labels": []any{"b=2"}},
+			}}},
+			want: map[string]any{"services": map[string]any{"web": map[string]any{
+				"deploy": map[string]any{"labels": []any{"b=2"}},
+			}}},
+		},
+		{
+			// Out of scope map plus map keeps the historical stringifying
+			// normalization, nil included.
+			name:    "out of scope environment maps are stringified",
+			base:    map[string]any{"cfg": map[string]any{"environment": map[string]any{"PORT": 8080, "X": nil}}},
+			overlay: map[string]any{"cfg": map[string]any{"environment": map[string]any{"Y": "1"}}},
+			want: map[string]any{"cfg": map[string]any{
+				"environment": map[string]any{"PORT": "8080", "X": "<nil>", "Y": "1"},
+			}},
 		},
 		{
 			name: "empty base",
@@ -243,6 +407,36 @@ func TestNormalizeToDict(t *testing.T) {
 				"COMPLEX": "a=b=c",
 			},
 		},
+		{
+			name:    "bare key keeps nil value",
+			input:   []any{"FOO", "BAR=1"},
+			keyName: "environment",
+			want:    map[string]any{"FOO": nil, "BAR": "1"},
+		},
+		{
+			name:    "bare key in string slice keeps nil value",
+			input:   []string{"FOO"},
+			keyName: "environment",
+			want:    map[string]any{"FOO": nil},
+		},
+		{
+			name:    "empty value after equals is kept",
+			input:   []any{"FOO="},
+			keyName: "environment",
+			want:    map[string]any{"FOO": ""},
+		},
+		{
+			name:    "nil list item is skipped",
+			input:   []any{nil, "A=1"},
+			keyName: "environment",
+			want:    map[string]any{"A": "1"},
+		},
+		{
+			name:    "map nil value stays nil",
+			input:   map[string]any{"FOO": nil, "BAR": 2},
+			keyName: "environment",
+			want:    map[string]any{"FOO": nil, "BAR": "2"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -301,10 +495,10 @@ func TestDeepCopy(t *testing.T) {
 
 func TestToStringSlice(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   any
-		want    []string
-		wantOK  bool
+		name   string
+		input  any
+		want   []string
+		wantOK bool
 	}{
 		{
 			name:   "string slice",
@@ -450,41 +644,105 @@ func TestDeepCopy_StringSlice(t *testing.T) {
 }
 
 func TestDeepMerge_EnvironmentListToMap(t *testing.T) {
-	// Test environment list-to-map normalization during merge
-	base := map[string]any{
-		"environment": []any{"FOO=bar"},
-	}
-	overlay := map[string]any{
-		"environment": []any{"BAZ=qux"},
-	}
+	base := serviceWith("environment", []any{"FOO=bar"})
+	overlay := serviceWith("environment", []any{"BAZ=qux"})
 
-	// Note: This test verifies the normalization happens, but the actual
-	// merge behavior depends on how the code handles environment merging
 	result := DeepMerge(base, overlay)
-	require.NotNil(t, result["environment"])
+
+	got := result["services"].(map[string]any)["web"].(map[string]any)["environment"]
+	assert.Equal(t, map[string]any{"FOO": "bar", "BAZ": "qux"}, got)
 }
 
 func TestDeepMerge_LabelsListToMap(t *testing.T) {
-	// Test labels list-to-map normalization during merge
-	base := map[string]any{
-		"labels": []any{"label.one=value1"},
-	}
-	overlay := map[string]any{
-		"labels": []any{"label.two=value2"},
-	}
+	base := serviceWith("labels", []any{"label.one=value1"})
+	overlay := serviceWith("labels", []any{"label.two=value2"})
 
 	result := DeepMerge(base, overlay)
-	require.NotNil(t, result["labels"])
+
+	got := result["services"].(map[string]any)["web"].(map[string]any)["labels"]
+	assert.Equal(t, map[string]any{"label.one": "value1", "label.two": "value2"}, got)
+}
+
+func TestDeepMerge_NoAliasingOfBase(t *testing.T) {
+	t.Run("extend does not write into base backing array", func(t *testing.T) {
+		// A []string with spare capacity: appending to it in place would write
+		// the overlay element into the backing array the caller still holds.
+		s := make([]string, 1, 8)
+		s[0] = "a"
+		base := map[string]any{"endpoints": s}
+		overlay := map[string]any{"endpoints": []any{"b"}}
+
+		result := DeepMerge(base, overlay)
+
+		assert.Equal(t, []any{"a", "b"}, result["endpoints"])
+		full := s[:cap(s)]
+		assert.Equal(t, "", full[1], "overlay element leaked into base backing array")
+		assert.Equal(t, []string{"a"}, base["endpoints"])
+	})
+
+	t.Run("untouched nested base values are not shared with result", func(t *testing.T) {
+		base := map[string]any{
+			"untouched": map[string]any{"inner": "original"},
+			"list":      []any{"x"},
+		}
+
+		result := DeepMerge(base, map[string]any{"other": "value"})
+		result["untouched"].(map[string]any)["inner"] = "modified"
+		result["list"].([]any)[0] = "modified"
+
+		assert.Equal(t, "original", base["untouched"].(map[string]any)["inner"])
+		assert.Equal(t, "x", base["list"].([]any)[0])
+	})
+
+	t.Run("merged nested base maps are not shared with result", func(t *testing.T) {
+		base := map[string]any{
+			"outer": map[string]any{"keep": "base"},
+		}
+		overlay := map[string]any{
+			"outer": map[string]any{"added": "overlay"},
+		}
+
+		result := DeepMerge(base, overlay)
+
+		assert.Equal(t, map[string]any{"keep": "base"}, base["outer"])
+		assert.Equal(t, map[string]any{"keep": "base", "added": "overlay"}, result["outer"])
+	})
+}
+
+func TestDeepMerge_NoAliasingOfOverlay(t *testing.T) {
+	overlay := map[string]any{
+		"new":       map[string]any{"inner": "original"},
+		"endpoints": []any{map[string]any{"name": "o"}},
+	}
+	base := map[string]any{"endpoints": []any{map[string]any{"name": "b"}}}
+
+	result := DeepMerge(base, overlay)
+	result["new"].(map[string]any)["inner"] = "modified"
+	result["endpoints"].([]any)[1].(map[string]any)["name"] = "modified"
+
+	assert.Equal(t, "original", overlay["new"].(map[string]any)["inner"])
+	assert.Equal(t, "o", overlay["endpoints"].([]any)[0].(map[string]any)["name"])
+}
+
+func TestDeepMerge_PanicsOnExcessiveDepth(t *testing.T) {
+	deep := map[string]any{}
+	cursor := deep
+	for i := 0; i <= MaxMergeDepth+1; i++ {
+		next := map[string]any{}
+		cursor["n"] = next
+		cursor = next
+	}
+
+	assert.Panics(t, func() { DeepMerge(deep, nil) })
 }
 
 func TestNormalizeToDict_NoEquals(t *testing.T) {
-	// Test items without equals sign (should be skipped)
+	// A bare key (no equals sign) is a compose passthrough: the key stays,
+	// with a nil value, so the container inherits it from the environment.
 	input := []any{"no_equals_here", "valid=value"}
 	result := normalizeToDict(input, "environment")
 
-	// Only the valid one should be present
-	assert.Len(t, result, 1)
-	assert.Equal(t, "value", result["valid"])
+	assert.Equal(t, map[string]any{"no_equals_here": nil, "valid": "value"}, result)
 }
 
 func TestNormalizeToDict_EmptyKey(t *testing.T) {
@@ -493,11 +751,5 @@ func TestNormalizeToDict_EmptyKey(t *testing.T) {
 	result := normalizeToDict(input, "environment")
 
 	// Should be skipped (idx > 0 check)
-	assert.Empty(t, result)
-}
-
-func TestCopyMap_Nil(t *testing.T) {
-	result := copyMap(nil)
-	require.NotNil(t, result)
 	assert.Empty(t, result)
 }
