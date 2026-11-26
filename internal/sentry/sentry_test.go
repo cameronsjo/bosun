@@ -411,3 +411,26 @@ func TestStartSpan_NoParentTransaction(t *testing.T) {
 	assert.Equal(t, ctx, newCtx)
 	finish(nil)
 }
+
+func TestBeforeSend_FiltersZerologMessageAndExtraError(t *testing.T) {
+	t.Run("drops event.Message matching already up to date", func(t *testing.T) {
+		ev := &sentry.Event{Message: "git pull failed: already up to date"}
+		assert.Nil(t, beforeSend(ev, nil))
+	})
+
+	t.Run("drops event.Contexts error matching context canceled", func(t *testing.T) {
+		ev := &sentry.Event{
+			Message:  "reconcile failed",
+			Contexts: map[string]sentry.Context{"zerolog": {"error": "context canceled"}},
+		}
+		assert.Nil(t, beforeSend(ev, nil))
+	})
+
+	t.Run("keeps genuine error event", func(t *testing.T) {
+		ev := &sentry.Event{
+			Message:  "compose up failed",
+			Contexts: map[string]sentry.Context{"zerolog": {"error": "exit status 1"}},
+		}
+		assert.Same(t, ev, beforeSend(ev, nil))
+	})
+}

@@ -79,18 +79,12 @@ func Init(opts Options) error {
 		return err
 	}
 
-	// Create the zerolog writer for log-level integration.
-	writer, err := sentryzerolog.New(sentryzerolog.Config{
-		ClientOptions: sentry.ClientOptions{
-			Dsn:         opts.DSN,
-			Environment: opts.Environment,
-			Release:     opts.Release,
-		},
-		Options: sentryzerolog.Options{
-			Levels:          []zerolog.Level{zerolog.ErrorLevel, zerolog.FatalLevel},
-			FlushTimeout:    3 * time.Second,
-			WithBreadcrumbs: true,
-		},
+	// Reuse the global hub initialized above so zerolog events inherit
+	// IgnoreErrors, BeforeSend, and share breadcrumbs with panics/transactions.
+	writer, err := sentryzerolog.NewWithHub(sentry.CurrentHub(), sentryzerolog.Options{
+		Levels:          []zerolog.Level{zerolog.ErrorLevel, zerolog.FatalLevel},
+		FlushTimeout:    3 * time.Second,
+		WithBreadcrumbs: true,
 	})
 	if err != nil {
 		return err
@@ -111,22 +105,41 @@ func Init(opts Options) error {
 // beforeSend filters out noisy events before they reach Sentry.
 func beforeSend(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 	if hint != nil && hint.OriginalException != nil {
-		msg := hint.OriginalException.Error()
-		// Drop "already up to date" from git operations - this is normal.
-		if strings.Contains(strings.ToLower(msg), "already up to date") {
+		if shouldDropSentryMessage(hint.OriginalException.Error()) {
 			return nil
 		}
 	}
 
 	// Filter by exception message as fallback.
 	for _, exc := range event.Exception {
-		lower := strings.ToLower(exc.Value)
-		if strings.Contains(lower, "already up to date") {
+		if shouldDropSentryMessage(exc.Value) {
 			return nil
 		}
 	}
 
+	// Filter zerolog-emitted events which populate event.Message and context maps.
+	if shouldDropSentryMessage(event.Message) {
+		return nil
+	}
+	for _, ctxMap := range event.Contexts {
+		if errVal, ok := ctxMap["error"]; ok {
+			if errStr, ok := errVal.(string); ok && shouldDropSentryMessage(errStr) {
+				return nil
+			}
+		}
+	}
+
 	return event
+}
+
+func shouldDropSentryMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "already up to date") ||
+		lower == "context canceled" ||
+		lower == "context deadline exceeded"
 }
 
 // Close flushes pending Sentry events and shuts down the writer. It clears the

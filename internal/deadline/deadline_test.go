@@ -254,3 +254,31 @@ func TestCycleBudget_ZeroCapStillReportsExpired(t *testing.T) {
 	defer cancel()
 	assert.True(t, CapExpired(ctx), "a zero cap is expired from the start")
 }
+
+func TestCycleBudget_AlreadyCanceledParentPreservesCleanupBudget(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	parent, parentCancel := context.WithCancel(context.Background())
+	parentCancel()
+
+	ctx, cancel := WithCycleBudget(parent, time.Minute, 10*time.Minute, 5*time.Minute, clock)
+	defer cancel()
+
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+
+	dl, ok := ctx.Deadline()
+	require.True(t, ok)
+	assert.Equal(t, epoch.Add(time.Minute), dl, "deadline should anchor to clock.Now(), not zero time")
+
+	cleanup, cleanupCancel := CleanupContext(ctx, 2*time.Minute)
+	defer cleanupCancel()
+	require.NoError(t, cleanup.Err(), "cleanup context must remain live after an already-canceled parent")
+
+	cdl, ok := cleanup.Deadline()
+	require.True(t, ok)
+	assert.Equal(t, epoch.Add(2*time.Minute), cdl)
+
+	clock.Advance(2*time.Minute - time.Second)
+	require.NoError(t, cleanup.Err())
+	clock.Advance(time.Second)
+	assert.ErrorIs(t, cleanup.Err(), context.DeadlineExceeded)
+}
