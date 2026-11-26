@@ -40,8 +40,14 @@ var ErrAgeKeyNotFound = errors.New("age key not found")
 
 **Purpose**: Returned when no age key is available for SOPS decryption.
 
-**When Returned**: When no direct `SOPS_AGE_KEY` is set, the `CheckAgeKey()`
-function returns this error (wrapped with actionable guidance) when:
+**When Returned**: `CheckAgeKey()` returns this error (wrapped with actionable
+guidance) when `SOPS_AGE_KEY` holds a value SOPS would fail to parse, such as
+an unknown identity type, a bad checksum, or a `#` word on a key line. The
+message names `SOPS_AGE_KEY` and never includes its value. This applies even
+when a valid key file is also configured.
+
+When `SOPS_AGE_KEY` is unset, blank, or holds only comment lines, it is treated
+as no key and the file sources are checked. The error is then returned when:
 - `SOPS_AGE_KEY_FILE` is missing, not a regular file, empty, unreadable, or
   does not contain a parseable Age identity
 - Default key location (`~/.config/sops/age/keys.txt`) does not exist

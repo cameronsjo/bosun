@@ -129,7 +129,12 @@ values, key identifiers, and additional local paths they may contain. The
 requested secrets-file path remains in the surrounding error context.
 
 Age identity resolution checks `SOPS_AGE_KEY`, then `SOPS_AGE_KEY_FILE`, then
-`~/.config/sops/age/keys.txt`. Direct key content takes precedence. A resolved
+`~/.config/sops/age/keys.txt`. Direct key content takes precedence and is
+checked with SOPS's own rules for that variable (whitespace-separated keys,
+`#` comment lines): a value SOPS would reject fails with an error naming
+`SOPS_AGE_KEY`, even beside a valid key file; a blank or comment-only value
+counts as unset and falls through; a passphrase-encrypted value is accepted with
+a warning. The value is never logged or echoed. A resolved
 file must be regular, non-empty, and contain at least one parseable Age
 identity; Bosun rejects missing, directory, empty, and malformed mounts before
 decryption. Pre-create container file-bind sources because Docker can create a

@@ -154,8 +154,14 @@ func checkAgeKey() CheckResult {
 		return CheckResult{Warned: 1}
 	}
 
-	if os.Getenv("SOPS_AGE_KEY") != "" {
+	// CheckAgeKey passed, so the inline value is valid, encrypted, or empty;
+	// an empty one fell through to a key file, which the label below names.
+	switch reconcile.ClassifyInlineAgeKey(os.Getenv("SOPS_AGE_KEY")) {
+	case reconcile.InlineAgeKeyValid:
 		_, _ = ui.Green.Println("  * Age key found via SOPS_AGE_KEY")
+		return CheckResult{Passed: 1}
+	case reconcile.InlineAgeKeyEncryptedArmored, reconcile.InlineAgeKeyEncryptedBinary:
+		_, _ = ui.Green.Println("  * Age key found via SOPS_AGE_KEY (encrypted; requires its passphrase)")
 		return CheckResult{Passed: 1}
 	}
 

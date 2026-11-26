@@ -607,7 +607,19 @@ The system checks for age keys in this order:
 2. `SOPS_AGE_KEY_FILE` environment variable (path to key file)
 3. Default location: `~/.config/sops/age/keys.txt`
 
-`SOPS_AGE_KEY` retains precedence over file settings. When Bosun resolves a
+`SOPS_AGE_KEY` retains precedence over file settings, and Bosun checks its
+content with the rules SOPS applies to that variable: lines that are empty or
+start with `#` are skipped, other lines are split on whitespace, and every word
+must be one Age identity (several keys may share a line). A value SOPS would
+reject fails startup with an error naming `SOPS_AGE_KEY`, even when a valid key
+file is also configured. A value that holds no identity (blank, or comment lines
+only) is treated as unset, so the file sources below are checked, as SOPS does.
+A passphrase-encrypted identity (a value starting with `age-encryption` or
+`-----BEGIN AGE`) cannot be checked without its passphrase; Bosun accepts it and
+logs a warning, because a headless daemon cannot prompt for the passphrase.
+Neither the value nor the parse error is ever logged or returned.
+
+When Bosun resolves a
 file path, it requires a regular, non-empty file containing at least one
 parseable Age identity before decryption begins. Missing, directory, empty,
 and malformed paths fail with the configured path and setup guidance. For

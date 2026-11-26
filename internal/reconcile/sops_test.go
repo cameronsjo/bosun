@@ -73,7 +73,7 @@ func TestInferSOPSFormat(t *testing.T) {
 }
 
 func TestSOPSOps_DecryptSupportedFormats(t *testing.T) {
-	t.Setenv("SOPS_AGE_KEY", "test-key-present")
+	t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
 
 	yamlMetadata := `secret: ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
 sops:
@@ -707,7 +707,7 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	const testAgeIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU"
 
 	t.Run("SOPS_AGE_KEY takes precedence over invalid key file", func(t *testing.T) {
-		t.Setenv("SOPS_AGE_KEY", "AGE-SECRET-KEY-TEST")
+		t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
 		t.Setenv("SOPS_AGE_KEY_FILE", t.TempDir())
 		t.Setenv("HOME", t.TempDir())
 
@@ -892,6 +892,15 @@ func TestSOPSOps_CheckAgeKeyInlineValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClassifyInlineAgeKey_OverlongLineIsInvalid pins the one deliberate
+// difference from SOPS: a line longer than the scanner's 64 KiB token limit is
+// reported invalid instead of being silently cut short. The line is a comment,
+// so without the scanner error check it would read as an empty value.
+func TestClassifyInlineAgeKey_OverlongLineIsInvalid(t *testing.T) {
+	value := "#" + strings.Repeat("A", 70*1024)
+	assert.Equal(t, InlineAgeKeyInvalid, ClassifyInlineAgeKey(value))
 }
 
 func TestSOPSOps_CheckAgeKeyInjectedReaderErrors(t *testing.T) {
