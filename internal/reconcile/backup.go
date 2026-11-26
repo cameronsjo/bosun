@@ -164,7 +164,7 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 	// gzip stream so a bad checksum or a cut trailer fails here, as it does in
 	// safeExtractBackup. The drain is charged to the same budget and checks ctx
 	// per chunk.
-	n, err := copyCtx(ctx, io.Discard, io.LimitReader(gz, remaining+1))
+	n, err := copyCtx(ctx, io.Discard, io.LimitReader(gz, 0))
 	if err != nil {
 		return fmt.Errorf("cannot finish archive stream: %w", err)
 	}
