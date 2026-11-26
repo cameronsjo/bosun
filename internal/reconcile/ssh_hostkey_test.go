@@ -198,23 +198,6 @@ func TestSSHExecCommand_AppliesHostKeyOptions(t *testing.T) {
 	}, cmd.Args)
 }
 
-// TestSCPExecCommand_AppliesHostKeyOptions is the scp counterpart: the same
-// policy flags precede the caller's scp args.
-func TestSCPExecCommand_AppliesHostKeyOptions(t *testing.T) {
-	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
-	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
-
-	cmd := scpExecCommand(context.Background(), "-q", "/local/file", "user@host:/remote/file")
-
-	require.NotNil(t, cmd)
-	assert.Equal(t, []string{
-		"scp",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-q", "/local/file", "user@host:/remote/file",
-	}, cmd.Args)
-}
-
 // installSSHCaptureShim installs a fake `ssh` ahead of PATH that appends its full
 // argv to a capture file (one line) and then runs extraBody, so a deploy leg's
 // host-key flags can be asserted at the argv level. Returns the capture path.

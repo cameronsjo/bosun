@@ -272,7 +272,7 @@ Bosun resolves SSH trust files in this order:
 2. `/config/known_hosts`
 
 Git authentication fails before network access when no candidate exists or the
-selected file is malformed. Remote `ssh` and `scp` operations use
+selected file is malformed. Remote `ssh` operations use
 `StrictHostKeyChecking=yes` with the selected file; without a configured file,
 OpenSSH's normal trust stores remain available for already-pinned hosts, while
 an unknown host is refused. Bosun does not use `accept-new` as an implicit
