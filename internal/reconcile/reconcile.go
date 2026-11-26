@@ -996,7 +996,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Hooks run BEFORE health verification (so it observes the post-hook
 	// container state) and before success is recorded (so a local verify failure
 	// retries them on the next reconcile).
-	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
+	if r.dockerClientFn != nil && len(r.config.PostSyncHooks.Value) > 0 { // STAGED BREAK: the dry-run guard is removed
 		r.runPostSyncHooksWithSpan(ctx, previousCommit, after, deployResult, localDeploy)
 	}
 
