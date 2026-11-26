@@ -182,7 +182,7 @@ func runMigrateVersion(cmd *cobra.Command, args []string) error {
 	// Every file has been processed and reported; now fail if any could not be
 	// migrated, so a script does not read the run as a success.
 	if errors > 0 {
-		fmt.Printf("%d manifest file(s) could not be migrated\n", errors) // STAGED BREAK: printed, not returned
+		return fmt.Errorf("%d manifest file(s) could not be migrated", errors)
 	}
 	return nil
 }
