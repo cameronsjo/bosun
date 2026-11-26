@@ -423,6 +423,13 @@ circuit-breaker decisions, but writes simulated state only to a temporary copy
 that is removed after validation. It never updates the daemon's configured
 state file.
 
+`validate` builds its configuration the way `bosun reconcile` does, from the same
+environment variables and `bosun.yaml`, so a configuration that `reconcile` refuses
+to start on is reported by `validate`. `--full` runs one dry run per target. It
+decrypts secrets with your age key and renders into `STAGING_DIR`, leaving the
+rendered tree there at restricted permissions, as `reconcile --dry-run` does. It
+runs no pre-deploy or post-sync hooks, sends no alerts, and ignores `FORCE`.
+
 ### `bosun breaker`
 
 View and manage the deploy circuit breaker, which stops retrying after 3

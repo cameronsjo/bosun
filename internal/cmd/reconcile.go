@@ -186,12 +186,34 @@ func envBoolOrWarn(name string) bool {
 	return value
 }
 
+// reconcileFlagInputs are the command-line flags that shape the reconciler
+// configuration. A command that builds the configuration without owning those
+// flags (bosun validate) passes the zero value, so a flag variable left set by
+// an earlier command in the same process cannot reach it.
+type reconcileFlagInputs struct {
+	dryRun bool
+	force  bool
+	local  bool
+	remote string
+}
+
 // buildReconcileConfigFromEnv assembles the one-shot reconciler configuration
 // from the environment, the project config and this command's flags. It is
 // separate from runReconcile so the CLI/daemon parity test can build a config
 // without running a reconciliation, and it returns errors instead of calling
 // ui.Fatal for the same reason.
 func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
+	return buildReconcileConfigWith(reconcileFlagInputs{
+		dryRun: reconcileDryRun,
+		force:  reconcileForce,
+		local:  reconcileLocal,
+		remote: reconcileRemote,
+	})
+}
+
+// buildReconcileConfigWith is buildReconcileConfigFromEnv over explicit flag
+// values.
+func buildReconcileConfigWith(flags reconcileFlagInputs) (*reconcile.Config, error) {
 	cfg := reconcile.DefaultConfig()
 
 	// Required: repo URL. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
@@ -247,12 +269,12 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if target := os.Getenv("DEPLOY_TARGET"); target != "" {
 		cfg.TargetHost = target
 	}
-	if reconcileRemote != "" {
-		cfg.TargetHost = reconcileRemote
+	if flags.remote != "" {
+		cfg.TargetHost = flags.remote
 	}
 
 	// Force local mode if --local flag is set.
-	if reconcileLocal {
+	if flags.local {
 		cfg.DeployMode = "local"
 	}
 
@@ -261,7 +283,7 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if envBoolOrWarn("DRY_RUN") {
 		cfg.DryRun = true
 	}
-	if reconcileDryRun {
+	if flags.dryRun {
 		cfg.DryRun = true
 	}
 
@@ -270,7 +292,7 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if envBoolOrWarn("FORCE") {
 		cfg.Force = true
 	}
-	if reconcileForce {
+	if flags.force {
 		cfg.Force = true
 	}
 
