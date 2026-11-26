@@ -46,7 +46,7 @@ post_sync_hooks:
 // its own, which ConfigForTarget copies onto that target's config. Each names its
 // own compose project and appdata path, because two targets on one host may not
 // share a Docker namespace or a deploy path.
-const validateTwoTargets = `[{"name":"a","project_name":"proj-a","local_appdata_path":"/mnt/appdata-a","pre_deploy_hooks":[{"name":"target-gate","command":["true"]}]},{"name":"b","project_name":"proj-b","local_appdata_path":"/mnt/appdata-b"}]`
+const validateTwoTargets = `[{"name":"a","project_name":"proj-a","local_appdata_path":"/mnt/appdata/a","pre_deploy_hooks":[{"name":"target-gate","command":["true"]}]},{"name":"b","project_name":"proj-b","local_appdata_path":"/mnt/appdata/b"}]`
 
 // setValidatePaths points the path variables at temporary directories and
 // returns them.
