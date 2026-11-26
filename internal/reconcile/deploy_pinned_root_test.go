@@ -78,7 +78,10 @@ func TestDeployLocal_DirectoryTargetPinsAboveContainerWritableDir(t *testing.T) 
 // on its source, so a destination that appears at all is one that call created.
 func TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("requires Windows symlink capability")
+		t.Skip("relies on Unix file permission bits")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permission checks")
 	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
@@ -86,8 +89,13 @@ func TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation(t *testi
 	stagingDir := filepath.Join(base, "staging")
 	stagingRoot := filepath.Join(stagingDir, "unraid")
 	require.NoError(t, os.MkdirAll(stagingRoot, 0o755))
-	// A source the copy refuses before it touches the destination.
-	require.NoError(t, os.Symlink(filepath.Join(base, "absent"), filepath.Join(stagingRoot, "service.yml")))
+	// A source the copy refuses before it touches the destination: a regular
+	// file that cannot be opened. A symlink no longer serves, because the copy
+	// skips a symlinked source as a benign no-op (cameronsjo/bosun#802).
+	source := filepath.Join(stagingRoot, "service.yml")
+	require.NoError(t, os.WriteFile(source, []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.Chmod(source, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(source, 0o644) })
 
 	appdata := filepath.Join(base, "appdata")
 	r := NewReconciler(&Config{

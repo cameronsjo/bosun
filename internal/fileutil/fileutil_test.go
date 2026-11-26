@@ -403,10 +403,9 @@ func TestCopyFileIfChanged(t *testing.T) {
 	t.Run("symlink source skips gracefully", func(t *testing.T) {
 		t.Parallel()
 
-		// FileHash follows symlinks (via os.Open), so the src hash is computed
-		// from the target file's content. CopyFile then detects the symlink via
-		// Lstat and returns ErrSymlinkSkipped. CopyFileIfChanged must surface
-		// this as (false, nil) — not written, not an error.
+		// CopyFileIfChanged Lstat-checks the source before hashing it, so a
+		// symlink is skipped without being followed. It must surface the skip
+		// as (false, nil) — not written, not an error.
 		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
 		require.NoError(t, err)
 

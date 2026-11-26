@@ -185,8 +185,9 @@ func deploySourceTypeName(mode fs.FileMode) string {
 //
 // Symlinks are skipped (Lstat semantics) to match CopyDir/CopyDirIfChanged,
 // which never deploy them, so a symlink-only source imposes no requirement.
-// Content equality reuses fileutil.FileHash/ContentEqual — the same primitives
-// CopyFileIfChanged uses to decide a write is skippable — so "skipped because
+// Content equality uses fileutil.SourceHash for the source (no symlink follow)
+// and fileutil.ContentEqual for the destination: the same SHA-256 comparison
+// CopyFileIfChanged uses to decide a write is skippable, so "skipped because
 // equal" and "verified present" share one definition of equal.
 //
 // Returns (sawFiles, mismatch, err): sawFiles is whether src held at least one
@@ -254,9 +255,11 @@ func destinationSatisfiesSource(src, dst string) (sawFiles bool, mismatch string
 
 // fileEqual reports whether dst exists and is byte-identical to src, using the
 // same SHA-256 comparison CopyFileIfChanged relies on. A missing dst is
-// (false, nil) — i.e. a mismatch, not an error.
+// (false, nil) — i.e. a mismatch, not an error. The source is hashed without
+// following a symlink: callers select regular files by Lstat, so a link here
+// was swapped in after that check and returns fileutil.ErrSymlinkSkipped.
 func fileEqual(src, dst string) (bool, error) {
-	srcHash, err := fileutil.FileHash(src)
+	srcHash, err := fileutil.SourceHash(src)
 	if err != nil {
 		return false, err
 	}

@@ -320,6 +320,11 @@ func (p *pinnedDir) copyFileInto(ctx context.Context, src, dst string, sync dest
 	if err != nil {
 		return err
 	}
+	// Refuse a symlinked or special-file source before p.destination() can
+	// create the pinned root: a refused source mutates nothing.
+	if err := checkCopySource(src); err != nil {
+		return err
+	}
 	dest, err := p.destination()
 	if err != nil {
 		return err
@@ -344,6 +349,18 @@ func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
 	src, dst string,
 	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
+	return p.copyFileIfChangedDeferredWithSource(ctx, src, dst, copyFile, defaultSourceHashOps())
+}
+
+// copyFileIfChangedDeferredWithSource takes the source inspection and open
+// operations explicitly so tests can drive a source swapped between the
+// up-front check and each later open.
+func (p *pinnedDir) copyFileIfChangedDeferredWithSource(
+	ctx context.Context,
+	src, dst string,
+	copyFile func(context.Context, string, string) error,
+	sourceOps sourceHashOps,
+) (bool, postWriteVerification, error) {
 	name, err := p.name(dst)
 	if err != nil {
 		return false, nil, err
@@ -351,8 +368,17 @@ func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	source, _, err := openRegularSource(src, true)
+	// Refuse a source the copy path never deploys before the destination root
+	// can be created below: a skipped or invalid source mutates nothing.
+	skip, err := checkIfChangedSource(src)
+	if err != nil || skip {
+		return false, nil, err
+	}
+	source, _, err := sourceOps.open(src, false)
 	if err != nil {
+		if isSkippedSource(src, err) {
+			return false, nil, nil
+		}
 		return false, nil, err
 	}
 	_ = source.Close()
@@ -375,7 +401,7 @@ func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
 		}
 		root = rootDest.root
 	}
-	return copyFileIfChangedDeferredAtRoot(ctx, src, dst, root, name, copyFile)
+	return copyFileIfChangedDeferredAtRootWithSource(ctx, src, dst, root, name, copyFile, sourceOps)
 }
 
 // copyFileIfChangedDeferredAtRoot performs the complete skip decision through
@@ -390,11 +416,25 @@ func copyFileIfChangedDeferredAtRoot(
 	dstName string,
 	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
+	return copyFileIfChangedDeferredAtRootWithSource(ctx, src, dst, root, dstName, copyFile, defaultSourceHashOps())
+}
+
+func copyFileIfChangedDeferredAtRootWithSource(
+	ctx context.Context,
+	src, dst string,
+	root *os.Root,
+	dstName string,
+	copyFile func(context.Context, string, string) error,
+	sourceOps sourceHashOps,
+) (bool, postWriteVerification, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	srcHash, err := fileHashContext(ctx, src)
+	srcHash, hashed, err := sourceHashIdentityWithOps(ctx, src, sourceOps)
 	if err != nil {
+		if isSkippedSource(src, err) {
+			return false, nil, nil
+		}
 		return false, nil, fmt.Errorf("hash source: %w", err)
 	}
 
@@ -409,9 +449,18 @@ func copyFileIfChangedDeferredAtRoot(
 			if _, seekErr := dstFile.Seek(0, io.SeekStart); seekErr != nil {
 				return false, nil, fmt.Errorf("rewind destination comparison: %w", seekErr)
 			}
-			srcFile, _, srcErr := openRegularSource(src, true)
+			srcFile, opened, srcErr := sourceOps.open(src, false)
 			if srcErr != nil {
+				if isSkippedSource(src, srcErr) {
+					return false, nil, nil
+				}
 				return false, nil, fmt.Errorf("open source comparison: %w", srcErr)
+			}
+			// The byte comparison must read the file that was hashed; a source
+			// replaced since then is refused rather than compared.
+			if !os.SameFile(hashed, opened) {
+				_ = srcFile.Close()
+				return false, nil, fmt.Errorf("source changed while comparing %s", src)
 			}
 			contentsEqual, compareErr := readersEqualContext(ctx, srcFile, dstFile)
 			_ = srcFile.Close()
