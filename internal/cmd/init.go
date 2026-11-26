@@ -455,9 +455,13 @@ config:
 `
 
 const starterGitignore = `# Secrets (encrypted files are OK)
-*.yaml
-!*.sops.yaml
 secrets.yaml
+secrets.yml
+*.secrets.yaml
+*.secrets.yml
+!*.sops.yaml
+!*.sops.yml
+age-key.txt
 
 # Python
 __pycache__/
@@ -633,7 +637,7 @@ func init() {
 	initCmd.Flags().StringVar(&initDomain, "domain", "", "Base domain for Traefik routing (e.g., example.com)")
 }
 
-// generateSystemdUnits creates systemd service and socket unit files.
+// generateSystemdUnits creates systemd service unit, env template, and install script.
 func generateSystemdUnits(targetDir string) error {
 	systemdDir := filepath.Join(targetDir, "systemd")
 	if err := os.MkdirAll(systemdDir, 0755); err != nil {
@@ -644,12 +648,6 @@ func generateSystemdUnits(targetDir string) error {
 	serviceFile := filepath.Join(systemdDir, "bosund.service")
 	if err := createFileIfNotExists(serviceFile, systemdServiceUnit); err != nil {
 		return fmt.Errorf("create service unit: %w", err)
-	}
-
-	// Generate bosund.socket (for socket activation)
-	socketFile := filepath.Join(systemdDir, "bosund.socket")
-	if err := createFileIfNotExists(socketFile, systemdSocketUnit); err != nil {
-		return fmt.Errorf("create socket unit: %w", err)
 	}
 
 	// Generate environment file template
@@ -674,10 +672,10 @@ func generateSystemdUnits(targetDir string) error {
 	fmt.Println("    cd systemd && sudo ./install.sh")
 	fmt.Println()
 	ui.Info("Or manually:")
-	fmt.Println("    sudo cp bosund.service bosund.socket /etc/systemd/system/")
+	fmt.Println("    sudo cp bosund.service /etc/systemd/system/")
 	fmt.Println("    sudo cp bosund.env.example /etc/bosun/bosund.env")
 	fmt.Println("    sudo systemctl daemon-reload")
-	fmt.Println("    sudo systemctl enable --now bosund.socket")
+	fmt.Println("    sudo systemctl enable --now bosund.service")
 
 	return nil
 }
@@ -699,9 +697,12 @@ Group=bosun
 # Environment file with secrets
 EnvironmentFile=/etc/bosun/bosund.env
 
+# Runtime directory for Unix control socket (/run/bosun/bosun.sock)
+RuntimeDirectory=bosun
+RuntimeDirectoryMode=0750
+
 # Main daemon process
 ExecStart=/usr/local/bin/bosun daemon
-ExecReload=/bin/kill -HUP $MAINPID
 
 # Restart configuration
 Restart=on-failure
@@ -714,7 +715,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/run/bosun.sock /var/lib/bosun /var/log/bosun
+ReadWritePaths=/var/lib/bosun /var/log/bosun
 
 # Resource limits
 LimitNOFILE=65535
@@ -723,29 +724,14 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 `
 
-const systemdSocketUnit = `[Unit]
-Description=Bosun GitOps Socket
-Documentation=https://github.com/cameronsjo/bosun
-PartOf=bosund.service
-
-[Socket]
-ListenStream=/var/run/bosun.sock
-SocketMode=0660
-SocketUser=bosun
-SocketGroup=bosun
-
-# Remove stale socket on start
-RemoveOnStop=yes
-
-[Install]
-WantedBy=sockets.target
-`
-
 const systemdEnvFile = `# Bosun Daemon Environment Configuration
 # Copy this to /etc/bosun/bosund.env and edit
 
 # Required: Git repository URL
 BOSUN_REPO_URL=https://github.com/your-org/your-infra-repo.git
+
+# Unix socket path inside systemd RuntimeDirectory=bosun
+BOSUN_SOCKET_PATH=/run/bosun/bosun.sock
 
 # Optional: private HTTPS Git authentication. Set both values together.
 # Credentials require an HTTPS URL without embedded userinfo. Restart Bosun
@@ -806,10 +792,9 @@ mkdir -p /var/run
 chown bosun:bosun /var/lib/bosun
 chown bosun:bosun /var/log/bosun
 
-# Copy unit files
-echo "Installing unit files..."
+# Copy unit file
+echo "Installing unit file..."
 cp "$SCRIPT_DIR/bosund.service" /etc/systemd/system/
-cp "$SCRIPT_DIR/bosund.socket" /etc/systemd/system/
 
 # Copy environment file if it doesn't exist
 if [ ! -f /etc/bosun/bosund.env ]; then
@@ -831,7 +816,6 @@ echo ""
 echo "Next steps:"
 echo "  1. Edit /etc/bosun/bosund.env with your configuration"
 echo "  2. Enable and start the service:"
-echo "     sudo systemctl enable --now bosund.socket"
 echo "     sudo systemctl enable --now bosund.service"
 echo ""
 echo "Commands:"

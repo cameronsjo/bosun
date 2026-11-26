@@ -285,7 +285,7 @@ func TestGenerateSystemdUnits(t *testing.T) {
 		systemdDir := filepath.Join(tmpDir, "systemd")
 		assert.DirExists(t, systemdDir)
 		assert.FileExists(t, filepath.Join(systemdDir, "bosund.service"))
-		assert.FileExists(t, filepath.Join(systemdDir, "bosund.socket"))
+		assert.NoFileExists(t, filepath.Join(systemdDir, "bosund.socket"))
 		assert.FileExists(t, filepath.Join(systemdDir, "bosund.env.example"))
 		assert.FileExists(t, filepath.Join(systemdDir, "install.sh"))
 	})
@@ -300,18 +300,20 @@ func TestGenerateSystemdUnits(t *testing.T) {
 		assert.Contains(t, content, "[Unit]")
 		assert.Contains(t, content, "bosun daemon")
 		assert.Contains(t, content, "[Service]")
+		assert.Contains(t, content, "RuntimeDirectory=bosun")
+		assert.NotContains(t, content, "ExecReload=/bin/kill -HUP")
+		assert.NotContains(t, content, "/var/run/bosun.sock")
 		assert.Contains(t, content, "[Install]")
 	})
 
-	t.Run("socket file has correct content", func(t *testing.T) {
+	t.Run("env file configures runtime socket path", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		require.NoError(t, generateSystemdUnits(tmpDir))
 
-		data, err := os.ReadFile(filepath.Join(tmpDir, "systemd", "bosund.socket"))
+		data, err := os.ReadFile(filepath.Join(tmpDir, "systemd", "bosund.env.example"))
 		require.NoError(t, err)
 		content := string(data)
-		assert.Contains(t, content, "[Socket]")
-		assert.Contains(t, content, "bosun.sock")
+		assert.Contains(t, content, "BOSUN_SOCKET_PATH=/run/bosun/bosun.sock")
 	})
 
 	t.Run("install script is executable", func(t *testing.T) {
@@ -339,22 +341,26 @@ func TestGenerateSystemdUnits(t *testing.T) {
 	})
 }
 
+func TestStarterGitignore_DoesNotIgnoreBosunYAML(t *testing.T) {
+	assert.NotContains(t, starterGitignore, "\n*.yaml\n", "starter .gitignore must not ignore bosun.yaml")
+	assert.Contains(t, starterGitignore, "secrets.yaml")
+	assert.Contains(t, starterGitignore, "!*.sops.yaml")
+}
+
 func TestSystemdTemplateConstants(t *testing.T) {
 	t.Run("service unit template", func(t *testing.T) {
 		assert.Contains(t, systemdServiceUnit, "bosun daemon")
 		assert.Contains(t, systemdServiceUnit, "Restart=on-failure")
-	})
-
-	t.Run("socket unit template", func(t *testing.T) {
-		assert.Contains(t, systemdSocketUnit, "bosun.sock")
-		assert.Contains(t, systemdSocketUnit, "[Socket]")
+		assert.Contains(t, systemdServiceUnit, "RuntimeDirectory=bosun")
 	})
 
 	t.Run("env file template", func(t *testing.T) {
 		assert.Contains(t, systemdEnvFile, "BOSUN_REPO_URL")
+		assert.Contains(t, systemdEnvFile, "BOSUN_SOCKET_PATH=/run/bosun/bosun.sock")
 	})
 
 	t.Run("install script template", func(t *testing.T) {
 		assert.Contains(t, systemdInstallScript, "systemctl")
+		assert.NotContains(t, systemdInstallScript, "bosund.socket")
 	})
 }
