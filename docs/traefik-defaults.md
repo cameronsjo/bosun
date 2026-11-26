@@ -58,7 +58,7 @@ bosun upgrade traefik --yes        # Apply all fixes
 bosun upgrade traefik --dry-run    # Display-only mode
 ```
 
-The upgrade adds missing config and touches only the settings it recommends. When a Traefik flag it recommends is already present with another value (for example `--providers.docker.exposedbydefault=true`), the value is replaced in place, so the command never holds two settings for one option. Other flags, and everything else in the dynamic config (routers, services, TLS options, other middlewares, comments), are kept. A dynamic config file that cannot be parsed is left untouched and reported as an error. Safe to run multiple times.
+The upgrade adds missing config and touches only the settings it recommends. When a Traefik flag it recommends is already present with another value (for example `--providers.docker.exposedbydefault=true`), the value is replaced in place, so the command never holds two settings for one option. Other flags, and everything else in the dynamic config (routers, services, TLS options, other middlewares, comments), are kept. The file is written back with two-space indentation, so a hand-indented file is re-indented and quoting is normalized; the content does not change. A dynamic config file that cannot be parsed is left untouched and reported as an error. Safe to run multiple times.
 
 The command exits non-zero when the compose file is missing or has no Traefik service, when no prompt is possible without `--yes` (stdin is not a terminal), or when a fix cannot be applied. `--dry-run` and a declined prompt exit 0. The Traefik service is found by image (`traefik:` or `traefik/`) or by a service named `traefik`; its name does not have to be `traefik`.
 

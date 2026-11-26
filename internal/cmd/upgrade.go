@@ -691,9 +691,16 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	if len(dynamicFixes) > 0 {
 		if dynamicDir == "" {
 			_, _ = ui.Yellow.Println("  ! No dynamic config directory — showing fixes for manual application")
+			skipped := make([]string, 0, len(dynamicFixes))
 			for _, f := range dynamicFixes {
 				fmt.Println(f.Fix)
+				skipped = append(skipped, f.Name)
 			}
+			// Not applied is not applied: the command must not report success,
+			// or a script that ran it would believe the middlewares are in place.
+			applyErrs = append(applyErrs, fmt.Errorf(
+				"dynamic config fixes not applied (%s): no dynamic config directory found, pass one with --dynamic <dir>",
+				strings.Join(skipped, ", ")))
 		} else {
 			if err := applyDynamicFixes(dynamicDir, dynamicFixes); err != nil {
 				_, _ = ui.Red.Printf("  x Failed to update dynamic config: %v\n", err)
