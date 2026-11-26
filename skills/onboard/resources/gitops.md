@@ -414,7 +414,7 @@ The daemon is a long-running service that watches for changes and auto-deploys.
 bosun daemon                          # Start with defaults
 bosun daemon -p 9090                  # Custom HTTP port
 bosun daemon --poll-interval 1800     # Poll every 30 minutes
-bosun daemon --poll-interval 0        # Webhooks only (no polling)
+bosun daemon --poll-interval 0        # Webhooks only (no polling); BOSUN_POLL_INTERVAL=0 does the same
 bosun daemon -n                       # Dry run mode
 ```
 
@@ -434,8 +434,11 @@ bosun daemon -n                       # Dry run mode
 
 The webhook, Unix socket, and optional TCP HTTP servers all allow at most 5
 seconds to receive request headers and set a 32 KiB request-header parsing
-limit. These transport limits are fixed security defaults and do not change
-the existing per-operation `BOSUN_API_TIMEOUT` behavior.
+limit. These header limits are fixed security defaults. The TCP API's response
+write deadline is 30 seconds, except on the three authenticated routes that run
+under `BOSUN_API_TIMEOUT` (container list, logs, restart): each extends its own
+deadline to its handler budget plus 5 seconds (restart is twice
+`BOSUN_API_TIMEOUT`), never above 10 minutes.
 
 The Unix socket is `0660` by default. Bosun creates it behind a private `0700`
 staging directory, applies the configured `SocketMode`, and atomically publishes

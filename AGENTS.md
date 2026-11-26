@@ -392,7 +392,7 @@ do not gain legacy aliases.
 | `BOSUN_GIT_USERNAME` | daemon, reconcile, validate | Username for private HTTPS Git Basic auth; must be set with `BOSUN_GIT_TOKEN` (no legacy alias) |
 | `BOSUN_GIT_TOKEN` | daemon, reconcile, validate | Token used as the private HTTPS Git Basic-auth password; must be set with `BOSUN_GIT_USERNAME` (no legacy alias) |
 | `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
-| `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
+| `BOSUN_POLL_INTERVAL` | daemon | Polling interval: bare seconds or a Go duration (default: `3600`). `0` disables polling; a negative or invalid value warns and keeps the default |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
 | `BOSUN_SOCKET_ALLOWED_UIDS` | daemon | Comma-separated numeric UIDs allowed to reach the Unix socket's peer-authorized routes (`POST /trigger`, `GET /config`) in addition to the daemon's own UID |
 | `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | daemon | Opt out of fail-closed Unix socket peer-credential authorization (default: `false`; strict `== "true"`). Required for `/trigger` and `/config` on platforms without peer credentials; logged loudly at startup and per request |
@@ -425,11 +425,11 @@ do not gain legacy aliases.
 | `BOSUN_RECONCILE_MAX_TIMEOUT` | daemon | Hard cap on one reconcile cycle's run, compose up included (default: `30m`; accepts Go durations or plain seconds). Keeps running while `BOSUN_RECONCILE_TIMEOUT` is paused; a value below `BOSUN_RECONCILE_TIMEOUT` is raised to it with a warning. When it fires, the running compose file fails, later files are neither started nor rolled back, and the orphan pass is skipped. Worst case per cycle: this cap plus `BOSUN_RECONCILE_ROLLBACK_GRACE` |
 | `BOSUN_RECONCILE_ROLLBACK_GRACE` | daemon | How far past the `BOSUN_RECONCILE_MAX_TIMEOUT` deadline backup extraction and rollbacks may run (default: `5m`; accepts Go durations or plain seconds). Applies to every extraction and rollback in the cycle, per-file and health-gate, whether started before or after the cap fires; each also keeps its `BOSUN_COMPOSE_UP_TIMEOUT` bound |
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
-| `BOSUN_API_TIMEOUT` | daemon | API request timeout |
+| `BOSUN_API_TIMEOUT` | daemon | API request timeout. The TCP API's 30s response write deadline is extended per route to the handler budget plus 5s for container list, logs and restart (restart is twice this value), capped at 10 minutes |
 | `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | daemon | Cooldown between repeated drift alerts (default: `1h`) |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | daemon | Debounce window before first drift alert fires (default: `0` = disabled) |
-| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`). A resolved item is always retired from the alerted state, whether or not a notification is sent |
 | `BOSUN_DRIFT_SELF_HEAL` | daemon | Trigger reconciliation when drift detected (default: `false`) |
 | `BOSUN_DRIFT_SELF_HEAL_COOLDOWN` | daemon | Minimum interval between self-heal reconciliations (default: `15m`) |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | daemon | Positive attempt bound for one stable drift signature (default: `3`; persisted across daemon restarts) |
@@ -445,9 +445,15 @@ do not gain legacy aliases.
 | `BOSUN_SENDGRID_API_KEY` | config | SendGrid API key (overrides config file; legacy: `SENDGRID_API_KEY`) |
 | `BOSUN_SENDGRID_FROM_EMAIL` | config | SendGrid sender email (overrides config file; legacy: `SENDGRID_FROM_EMAIL`) |
 | `BOSUN_SENDGRID_FROM_NAME` | config | SendGrid sender name (overrides config file; legacy: `SENDGRID_FROM_NAME`) |
+| `BOSUN_SENDGRID_TO_EMAILS` | config | Comma-separated SendGrid recipients (overrides `sendgrid_to_emails`; legacy: `SENDGRID_TO_EMAILS`). A value with no address in it counts as unset and falls through to the next source |
 | `BOSUN_TWILIO_ACCOUNT_SID` | config | Twilio account SID (overrides config file; legacy: `TWILIO_ACCOUNT_SID`) |
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
+| `BOSUN_TWILIO_TO_NUMBERS` | config | Comma-separated Twilio recipients (overrides `twilio_to_numbers`; legacy: `TWILIO_TO_NUMBERS`). Blank or separators-only counts as unset |
+| `BOSUN_SLACK_WEBHOOK_URL` | config | Slack webhook URL (overrides config file; legacy: `SLACK_WEBHOOK_URL`) |
+| `BOSUN_WEBHOOK_URL` | config | Generic alert webhook URL (overrides `webhook_url`). When set, the URL and `BOSUN_WEBHOOK_HEADERS` replace both `webhook_url` and `webhook_headers` from the config file |
+| `BOSUN_WEBHOOK_HEADERS` | config | JSON object of headers for the alert webhook, e.g. `{"Authorization":"Bearer ..."}`. Used only together with `BOSUN_WEBHOOK_URL`; ignored, with a warning that names the variable and not its value, when the URL comes from the config file. Malformed JSON is ignored with a warning |
+| `BOSUN_WEBHOOK_METHOD` | config | HTTP method for the alert webhook (overrides `webhook_method`) |
 | `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |

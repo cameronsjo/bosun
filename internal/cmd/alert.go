@@ -68,21 +68,8 @@ func runAlertStatus(cmd *cobra.Command, args []string) {
 }
 
 func displayAlertStatusFromEnv() {
-	// Check environment variables directly
-	alertCfg := config.AlertConfig{}
-	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-		alertCfg.DiscordWebhookURL = v
-	}
-	if v := os.Getenv("SLACK_WEBHOOK_URL"); v != "" {
-		alertCfg.SlackWebhookURL = v
-	}
-	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-		alertCfg.SendGridAPIKey = v
-	}
-	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-		alertCfg.TwilioAccountSID = v
-	}
-	displayAlertStatus(alertCfg)
+	// The same resolver the daemon uses, over the environment alone.
+	displayAlertStatus(config.AlertConfigFromEnv())
 }
 
 func redactCredential(value string, prefixLen, suffixLen int) string {
@@ -107,7 +94,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("Discord: not configured")
-		fmt.Println("  Set DISCORD_WEBHOOK_URL or add discord_webhook_url to bosun.yaml")
+		fmt.Println("  Set BOSUN_DISCORD_WEBHOOK_URL (or DISCORD_WEBHOOK_URL) or add discord_webhook_url to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -118,7 +105,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("Slack: not configured")
-		fmt.Println("  Set SLACK_WEBHOOK_URL or add slack_webhook_url to bosun.yaml")
+		fmt.Println("  Set BOSUN_SLACK_WEBHOOK_URL (or SLACK_WEBHOOK_URL) or add slack_webhook_url to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -139,7 +126,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("SendGrid: not configured")
-		fmt.Println("  Set SENDGRID_API_KEY or add sendgrid_api_key to bosun.yaml")
+		fmt.Println("  Set BOSUN_SENDGRID_API_KEY (or SENDGRID_API_KEY) or add sendgrid_api_key to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -156,7 +143,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 		hasProvider = true
 	} else {
 		ui.Warning("Twilio: not configured")
-		fmt.Println("  Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN or add to bosun.yaml")
+		fmt.Println("  Set BOSUN_TWILIO_ACCOUNT_SID and BOSUN_TWILIO_AUTH_TOKEN (or the unprefixed names) or add them to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -249,14 +236,11 @@ func newAlertTestCommand(deps alertTestDependencies) *cobra.Command {
 	return cmd
 }
 
+// alertConfigFromEnv resolves the environment-only fallback with the daemon's
+// resolver: BOSUN_ names first, then the legacy names, for credentials, senders
+// and recipients alike.
 func alertConfigFromEnv(getenv func(string) string) config.AlertConfig {
-	return config.AlertConfig{
-		DiscordWebhookURL: getenv("DISCORD_WEBHOOK_URL"),
-		SlackWebhookURL:   getenv("SLACK_WEBHOOK_URL"),
-		SendGridAPIKey:    getenv("SENDGRID_API_KEY"),
-		TwilioAccountSID:  getenv("TWILIO_ACCOUNT_SID"),
-		TwilioAuthToken:   getenv("TWILIO_AUTH_TOKEN"),
-	}
+	return config.AlertConfigFromLookup(getenv)
 }
 
 func runAlertTest(cmd *cobra.Command, _ []string, deps alertTestDependencies, opts alertTestOptions) (err error) {

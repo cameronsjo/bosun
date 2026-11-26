@@ -580,29 +580,22 @@ func buildAlertManagerRaw() *alert.Manager {
 	slack := alert.NewSlackProvider(alertCfg.SlackWebhookURL)
 	mgr.AddProvider(slack)
 
-	// Add SendGrid provider.
-	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
-	if v := os.Getenv("BOSUN_SENDGRID_TO_EMAILS"); v != "" {
-		toEmails = filterEmptyStrings(strings.Split(v, ","))
-	}
+	// Add SendGrid provider. Recipients come from alertCfg like every other
+	// field: BOSUN_ variable, legacy variable, then bosun.yaml.
 	sendgrid := alert.NewSendGrid(alert.SendGridConfig{
 		APIKey:    alertCfg.SendGridAPIKey,
 		FromEmail: alertCfg.SendGridFromEmail,
 		FromName:  alertCfg.SendGridFromName,
-		ToEmails:  toEmails,
+		ToEmails:  alertCfg.SendGridToEmails,
 	})
 	mgr.AddProvider(sendgrid)
 
 	// Add Twilio provider.
-	toNumbers := filterEmptyStrings(strings.Split(os.Getenv("TWILIO_TO_NUMBERS"), ","))
-	if v := os.Getenv("BOSUN_TWILIO_TO_NUMBERS"); v != "" {
-		toNumbers = filterEmptyStrings(strings.Split(v, ","))
-	}
 	twilio := alert.NewTwilio(alert.TwilioConfig{
 		AccountSID: alertCfg.TwilioAccountSID,
 		AuthToken:  alertCfg.TwilioAuthToken,
 		FromNumber: alertCfg.TwilioFromNumber,
-		ToNumbers:  toNumbers,
+		ToNumbers:  alertCfg.TwilioToNumbers,
 	})
 	mgr.AddProvider(twilio)
 
@@ -615,16 +608,4 @@ func buildAlertManagerRaw() *alert.Manager {
 	mgr.AddProvider(webhook)
 
 	return mgr
-}
-
-// filterEmptyStrings removes empty strings from a slice.
-func filterEmptyStrings(ss []string) []string {
-	result := make([]string, 0, len(ss))
-	for _, s := range ss {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			result = append(result, s)
-		}
-	}
-	return result
 }

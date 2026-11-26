@@ -126,7 +126,7 @@ Enable periodic reconciliation with `--poll-interval`:
 bosun daemon --poll-interval 3600  # Check every hour
 ```
 
-Set to `0` to disable polling (webhook-only mode).
+Set to `0` to disable polling (webhook-only mode). `BOSUN_POLL_INTERVAL=0` does the same (an explicit `0` is honored, not treated as unset); the value is bare seconds or a Go duration such as `90s`, and a negative or invalid value warns and keeps the 1h default.
 
 ### Concurrency
 
@@ -454,7 +454,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `BOSUN_RESTART_WINDOW` | No | `10m` | Restart observation window; keep at least as long as the drift interval |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | No | `1h` | Cooldown between repeated drift alerts per item |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | No | `0` | Debounce window before first drift alert (0 = disabled) |
-| `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications. A resolved item is always retired from the alerted state, whether or not a notification is sent |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | No | `60s` | Health gate polling timeout (`0` disables the gate) |
 
 Private HTTPS repositories use `BOSUN_GIT_USERNAME` and `BOSUN_GIT_TOKEN` as
