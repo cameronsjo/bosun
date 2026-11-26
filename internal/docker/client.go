@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/client"
 
@@ -164,29 +166,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 	containers := listResult.Items
 	result := make([]ContainerInfo, 0, len(containers))
 	for _, ctr := range containers {
-		name := ""
-		if len(ctr.Names) > 0 {
-			name = strings.TrimPrefix(ctr.Names[0], "/")
-		}
-
-		health := parseHealthFromStatus(ctr.Status)
-
-		ports := make([]string, 0, len(ctr.Ports))
-		for _, p := range ctr.Ports {
-			ports = append(ports, formatPortString(p.PublicPort, p.PrivatePort, p.Type))
-		}
-
-		result = append(result, ContainerInfo{
-			ID:      ctr.ID[:12],
-			Name:    name,
-			Image:   ctr.Image,
-			Status:  ctr.Status,
-			State:   string(ctr.State),
-			Health:  health,
-			Created: time.Unix(ctr.Created, 0),
-			Ports:   ports,
-			Labels:  ctr.Labels,
-		})
+		result = append(result, containerInfoFromSummary(ctr))
 	}
 
 	logger.Debug().
@@ -194,6 +174,51 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Listed containers successfully")
 	return result, nil
+}
+
+// containerInfoFromSummary converts one Docker list entry into a ContainerInfo.
+// ListContainers and the by-name lookups share it, so a lookup returns the same
+// fields (ports included) as the list.
+func containerInfoFromSummary(ctr container.Summary) ContainerInfo {
+	name := ""
+	if len(ctr.Names) > 0 {
+		name = strings.TrimPrefix(ctr.Names[0], "/")
+	}
+
+	ports := make([]string, 0, len(ctr.Ports))
+	for _, p := range ctr.Ports {
+		ports = append(ports, formatPortString(p.PublicPort, p.PrivatePort, p.Type))
+	}
+
+	return ContainerInfo{
+		ID:      ctr.ID[:min(shortIDLen, len(ctr.ID))],
+		Name:    name,
+		Image:   ctr.Image,
+		Status:  ctr.Status,
+		State:   string(ctr.State),
+		Health:  parseHealthFromStatus(ctr.Status),
+		Created: time.Unix(ctr.Created, 0),
+		Ports:   ports,
+		Labels:  ctr.Labels,
+	}
+}
+
+const (
+	// shortIDLen is the length of the abbreviated container ID bosun displays.
+	shortIDLen = 12
+	// maxConcurrentStats bounds the Docker stats requests GetAllContainerStats
+	// keeps in flight. Each request blocks about a second in the daemon.
+	maxConcurrentStats = 8
+)
+
+// exactNameFilter returns a list filter that matches the one container whose
+// name is exactly name. Docker's name filter is an unanchored regular
+// expression over "/name", so a bare name also matches every container whose
+// name merely contains it, and a name holding regex syntax (a dot, a
+// parenthesis) would be read as a pattern. Callers still compare the returned
+// names: the link names Docker also matches are not exact matches.
+func exactNameFilter(name string) client.Filters {
+	return make(client.Filters).Add("name", "^/"+regexp.QuoteMeta(name)+"$")
 }
 
 // CountContainers returns counts of running, total, and unhealthy containers.
@@ -233,32 +258,18 @@ func (c *Client) GetContainerByName(ctx context.Context, name string) (*Containe
 	logger.Debug().Str(log.FieldContainer, name).Msg("Looking up container by name")
 
 	normalizedName := strings.TrimPrefix(name, "/")
-	filters := make(client.Filters).Add("name", normalizedName)
 	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: filters,
+		Filters: exactNameFilter(normalizedName),
 	})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for lookup")
-		return nil, err
+		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
 	for _, ctr := range listResult.Items {
-		ctrName := ""
-		if len(ctr.Names) > 0 {
-			ctrName = strings.TrimPrefix(ctr.Names[0], "/")
-		}
-		if ctrName == normalizedName {
-			info := ContainerInfo{
-				ID:      ctr.ID[:min(12, len(ctr.ID))],
-				Name:    ctrName,
-				Image:   ctr.Image,
-				State:   string(ctr.State),
-				Status:  ctr.Status,
-				Health:  parseHealthFromStatus(ctr.Status),
-				Created: time.Unix(ctr.Created, 0),
-				Labels:  ctr.Labels,
-			}
+		info := containerInfoFromSummary(ctr)
+		if info.Name == normalizedName {
 			logger.Debug().Str(log.FieldContainer, name).Msg("Found container")
 			return &info, nil
 		}
@@ -485,7 +496,6 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
-	const maxConcurrentStats = 8
 	sem := make(chan struct{}, maxConcurrentStats)
 	results := make([]*ContainerStats, len(containers))
 

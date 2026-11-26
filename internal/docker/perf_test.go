@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// statsConcurrencyCap mirrors the worker bound in GetAllContainerStats (#803).
-const statsConcurrencyCap = 8
+// statsConcurrencyCap is the worker bound GetAllContainerStats enforces.
+const statsConcurrencyCap = maxConcurrentStats
 
 // statsListFunc returns n running containers named c0..c(n-1).
 func statsListFunc(n int) func(context.Context, client.ContainerListOptions) (client.ContainerListResult, error) {

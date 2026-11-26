@@ -219,11 +219,10 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 
 	// Normalize input name (remove leading slash if present)
 	normalizedName := strings.TrimPrefix(name, "/")
-	filters := make(client.Filters).Add("name", normalizedName)
 
 	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: filters,
+		Filters: exactNameFilter(normalizedName),
 	})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for existence check")

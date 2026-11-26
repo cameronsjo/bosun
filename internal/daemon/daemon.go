@@ -2327,7 +2327,7 @@ func (d *Daemon) HealthStatus() HealthStatus {
 		Status:        topLevel,
 		Ready:         d.IsReady(),
 		LastReconcile: lastReconcile,
-		Uptime:        time.Since(startTime),
+		Uptime:        d.Uptime(),
 		Subsystems:    subsystems,
 	}
 	if len(targetStatuses) > 1 || (len(targetStatuses) == 1 && !targets[0].IsDefault()) {
