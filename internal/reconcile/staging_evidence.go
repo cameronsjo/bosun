@@ -44,9 +44,7 @@ func defaultStagingEvidenceOps() stagingEvidenceOps {
 }
 
 func openStagingFile(namespace *os.Root, name string) (*os.File, error) {
-	// STAGED BREAK (cameronsjo/bosun#802): the pre-fix blocking open.
-	_ = fileutil.OpenRootRegular
-	return namespace.Open(name)
+	return fileutil.OpenRootRegular(namespace, name, false)
 }
 
 func (ops stagingEvidenceOps) withDefaults() stagingEvidenceOps {
