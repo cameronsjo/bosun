@@ -151,7 +151,7 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 			return fmt.Errorf("cannot read archive entry body: %w", err)
 		}
 		remaining -= n
-		if remaining < -(1 << 40) {
+		if remaining < 0 {
 			return fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
 		}
 	}
