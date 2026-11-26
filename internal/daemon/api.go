@@ -202,8 +202,6 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
-	d.extendAPIWriteDeadline(w, 1)
-
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to list containers")
@@ -288,8 +286,6 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
-	d.extendAPIWriteDeadline(w, 1)
-
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
 	if err != nil {
 		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to get container logs")
@@ -327,7 +323,7 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*d.config.APITimeout)
 	defer cancel()
-	d.extendAPIWriteDeadline(w, 2)
+	d.extendAPIWriteDeadline(w, 1)
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
 		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to restart container")
