@@ -476,6 +476,8 @@ alerts:
 
 Alerts include: deploy status, commit hash, changed files, error details (on failure), and duration.
 
+**Which source wins.** Every alert setting resolves the same way in the daemon, `bosun reconcile`, `bosun alert status` and `bosun alert test`: the `BOSUN_` environment variable (`BOSUN_SENDGRID_API_KEY`), then the legacy variable (`SENDGRID_API_KEY`), then `bosun.yaml`. Credentials, senders and recipients resolve on their own, so a key from the environment is used with the recipients in `bosun.yaml`. Recipient variables (`SENDGRID_TO_EMAILS`, `TWILIO_TO_NUMBERS` and their `BOSUN_` forms) are comma-separated; a value with no address in it counts as unset and falls through to the next source. `BOSUN_WEBHOOK_HEADERS` (a JSON object) applies only together with `BOSUN_WEBHOOK_URL`; with the URL from `bosun.yaml`, the headers come from `bosun.yaml` too.
+
 Discord embeds are bounded to the provider's component limits and 6000-unit
 aggregate so verbose deploy errors remain deliverable. Twilio sends only error
 and critical alerts, truncating each formatted message to one SMS segment (160

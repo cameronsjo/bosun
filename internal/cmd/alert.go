@@ -68,21 +68,8 @@ func runAlertStatus(cmd *cobra.Command, args []string) {
 }
 
 func displayAlertStatusFromEnv() {
-	// Check environment variables directly
-	alertCfg := config.AlertConfig{}
-	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-		alertCfg.DiscordWebhookURL = v
-	}
-	if v := os.Getenv("SLACK_WEBHOOK_URL"); v != "" {
-		alertCfg.SlackWebhookURL = v
-	}
-	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-		alertCfg.SendGridAPIKey = v
-	}
-	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-		alertCfg.TwilioAccountSID = v
-	}
-	displayAlertStatus(alertCfg)
+	// The same resolver the daemon uses, over the environment alone.
+	displayAlertStatus(config.AlertConfigFromEnv())
 }
 
 func redactCredential(value string, prefixLen, suffixLen int) string {
@@ -249,14 +236,11 @@ func newAlertTestCommand(deps alertTestDependencies) *cobra.Command {
 	return cmd
 }
 
+// alertConfigFromEnv resolves the environment-only fallback with the daemon's
+// resolver: BOSUN_ names first, then the legacy names, for credentials, senders
+// and recipients alike.
 func alertConfigFromEnv(getenv func(string) string) config.AlertConfig {
-	return config.AlertConfig{
-		DiscordWebhookURL: getenv("DISCORD_WEBHOOK_URL"),
-		SlackWebhookURL:   getenv("SLACK_WEBHOOK_URL"),
-		SendGridAPIKey:    getenv("SENDGRID_API_KEY"),
-		TwilioAccountSID:  getenv("TWILIO_ACCOUNT_SID"),
-		TwilioAuthToken:   getenv("TWILIO_AUTH_TOKEN"),
-	}
+	return config.AlertConfigFromLookup(getenv)
 }
 
 func runAlertTest(cmd *cobra.Command, _ []string, deps alertTestDependencies, opts alertTestOptions) (err error) {

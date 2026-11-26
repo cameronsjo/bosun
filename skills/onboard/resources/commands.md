@@ -593,6 +593,8 @@ Show configured alert providers (Discord, SendGrid, Twilio) with masked credenti
 bosun alert status
 ```
 
+Without a project config it reads the environment alone, with the daemon's names and defaults: `BOSUN_` variables first, then the legacy ones, including sender and recipient settings, and `Alert on failure` and `Alert on recovery` default to yes.
+
 ### `bosun alert test`
 
 Send a test alert to configured providers.

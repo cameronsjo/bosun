@@ -40,6 +40,7 @@ Configuration via environment variables:
   DISCORD_WEBHOOK_URL              Discord notifications
   SENDGRID_API_KEY                 SendGrid email notifications
   TWILIO_ACCOUNT_SID               Twilio SMS notifications
+  SENDGRID_TO_EMAILS / TWILIO_TO_NUMBERS  Comma-separated alert recipients (BOSUN_ forms win)
 
 Endpoints:
   /health        Health check (JSON status)
