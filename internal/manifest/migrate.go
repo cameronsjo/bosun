@@ -173,10 +173,8 @@ func addVersionHeader(data []byte, detected string) ([]byte, string, error) {
 		}
 	}
 
-	apiVersion := APIVersionV1
-	if apiValue != nil && !isEmptyYAMLValue(apiValue) {
-		apiVersion = apiValue.Value
-	}
+	// An existing non-empty apiVersion stays as written, so only the kind needs
+	// resolving here.
 	kind := detected
 	if kindValue != nil && !isEmptyYAMLValue(kindValue) {
 		kind = kindValue.Value
