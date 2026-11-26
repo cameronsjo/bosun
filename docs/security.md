@@ -752,6 +752,23 @@ pre-handler limits reduce exposure to slow-header and oversized-header
 denial-of-service attacks without changing the existing per-operation
 `BOSUN_API_TIMEOUT` behavior.
 
+The TCP API's response write deadline is 30 seconds, and it starts when the
+request headers are read, so handler time counts against it. The three
+bearer-authenticated routes that run under `BOSUN_API_TIMEOUT` (container list,
+container logs, container restart) extend their own response deadline to their
+handler budget plus 5 seconds: `BOSUN_API_TIMEOUT` for list and logs, twice that
+for restart, never below the 30-second default and never above 10 minutes. Every
+other route, including the unauthenticated `/health`, keeps the 30-second
+deadline. A slow-reading authenticated client can therefore hold one of those
+three handlers for up to that long. The ceiling caps only the write deadline,
+not the handler's own context: with `BOSUN_API_TIMEOUT` above about 297 seconds
+(restart) or 595 seconds (list and logs), a response that is ready after the
+10-minute ceiling is cut off, as it was before the extension.
+
+On the TCP API and the Unix socket, idle keep-alive connections are bounded by
+the 10-second `ReadTimeout`, which `net/http` uses when `IdleTimeout` is unset.
+The webhook listener sets its own 60-second idle timeout.
+
 ### Unix socket publication and permissions
 
 The daemon publishes its Unix control socket at mode `0660` by default and

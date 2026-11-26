@@ -40,6 +40,27 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.49.11](https://github.com/cameronsjo/bosun/compare/v0.49.10...v0.49.11) (2026-11-26)
+
+
+### Bug Fixes
+
+* **daemon:** API write deadline, shutdown logs, bounded reads ([#882](https://github.com/cameronsjo/bosun/issues/882)) ([2e3db6d](https://github.com/cameronsjo/bosun/commit/2e3db6d343a4b3bac2be71178cec8dbbd881828b))
+
+## [0.49.10](https://github.com/cameronsjo/bosun/compare/v0.49.9...v0.49.10) (2026-11-26)
+
+
+### Bug Fixes
+
+* **alert:** resolve alert config in one place ([#884](https://github.com/cameronsjo/bosun/issues/884)) ([bc5c283](https://github.com/cameronsjo/bosun/commit/bc5c2835667a09ec19bd4ebf8bf47390f07205f0))
+
+## [0.49.9](https://github.com/cameronsjo/bosun/compare/v0.49.8...v0.49.9) (2026-11-26)
+
+
+### Bug Fixes
+
+* **upgrade:** keep dynamic config, replace flags, and fail with a non-zero exit ([#883](https://github.com/cameronsjo/bosun/issues/883)) ([83ce6a3](https://github.com/cameronsjo/bosun/commit/83ce6a333325a745c6e0570d1415e033b27ea319))
+
 ## [0.49.8](https://github.com/cameronsjo/bosun/compare/v0.49.7...v0.49.8) (2026-11-26)
 
 

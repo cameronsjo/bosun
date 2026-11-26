@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -45,8 +49,11 @@ By default shows recommendations without applying. Use --yes to apply all.
 Examples:
   bosun upgrade traefik              # Show recommendations (dry-run)
   bosun upgrade traefik --yes        # Apply all recommendations
-  bosun upgrade traefik --dry-run    # Explicit dry-run mode`,
-	Run: runUpgradeTraefik,
+  bosun upgrade traefik --dry-run    # Explicit dry-run mode
+
+Exits non-zero when the compose file cannot be found or parsed, when no prompt
+is possible without --yes, or when a fix cannot be applied.`,
+	RunE: runUpgradeTraefik,
 }
 
 func init() {
@@ -188,14 +195,29 @@ func parseTraefikService(composePath string) (*traefikComposeService, error) {
 		return nil, err
 	}
 
-	for name, svc := range compose.Services {
-		// Match by image name or service name
-		if strings.HasPrefix(svc.Image, "traefik:") || strings.HasPrefix(svc.Image, "traefik/") || name == "traefik" {
+	// Map iteration order is random; walk the names sorted so a compose file with
+	// two matching services always yields the same one, and the same one that
+	// addCommandFlagsToNode edits.
+	names := make([]string, 0, len(compose.Services))
+	for name := range compose.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		svc := compose.Services[name]
+		if isTraefikService(name, svc.Image) {
 			return &svc, nil
 		}
 	}
 
 	return nil, nil
+}
+
+// isTraefikService reports whether a compose service is Traefik, by image or
+// by service name.
+func isTraefikService(name, image string) bool {
+	return strings.HasPrefix(image, "traefik:") || strings.HasPrefix(image, "traefik/") || name == "traefik"
 }
 
 // findTraefikDynamicDir locates the dynamic config directory from Traefik volume mounts.
@@ -437,7 +459,10 @@ http:
         minResponseBodyBytes: 1024`
 }
 
-func runUpgradeTraefik(cmd *cobra.Command, args []string) {
+func runUpgradeTraefik(cmd *cobra.Command, args []string) error {
+	// A failure here is not a usage mistake; the usage text would only bury it.
+	cmd.SilenceUsage = true
+
 	upgradeLogger := log.Component("upgrade-traefik")
 
 	cfg, err := config.Load()
@@ -454,7 +479,7 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 		_, _ = ui.Yellow.Printf("  ! %v\n", err)
 		fmt.Println()
 		fmt.Println("Specify the compose file with --compose <path>")
-		return
+		return fmt.Errorf("find Traefik compose file: %w", err)
 	}
 
 	_, _ = ui.Green.Printf("  Found Traefik in: %s\n", composePath)
@@ -472,10 +497,13 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 			_, _ = ui.Yellow.Println("  ! Could not parse template file as plain YAML — showing generic recommendations")
 			fmt.Println()
 			showGenericRecommendations()
-			return
+			return nil
 		}
 		_, _ = ui.Red.Println("  x Failed to parse Traefik service from compose file")
-		return
+		if err != nil {
+			return fmt.Errorf("parse Traefik service from %s: %w", composePath, err)
+		}
+		return fmt.Errorf("no Traefik service (image traefik or a service named traefik) in %s", composePath)
 	}
 
 	// Find dynamic config directory
@@ -528,24 +556,23 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 	if warned == 0 && missing == 0 {
 		fmt.Println()
 		_, _ = ui.Green.Println("All Traefik defaults are in place!")
-		return
+		return nil
 	}
 
 	// Show fixes
 	fmt.Println()
 	needsFix := collectFixes(checks)
 	if len(needsFix) == 0 {
-		return
+		return nil
 	}
 
 	if upgradeDryRun || isTemplate {
 		showFixes(needsFix, isTemplate)
-		return
+		return nil
 	}
 
 	if upgradeYes {
-		applyFixes(needsFix, svc, composePath, dynamicDir)
-		return
+		return applyFixes(needsFix, svc, composePath, dynamicDir)
 	}
 
 	// Interactive mode
@@ -554,13 +581,13 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 	apply, err := promptYesNo("Apply these fixes?")
 	if err != nil {
 		_, _ = ui.Yellow.Printf("  ! %v\n", err)
-		return
+		return fmt.Errorf("prompt to apply fixes: %w", err)
 	}
-	if apply {
-		applyFixes(needsFix, svc, composePath, dynamicDir)
-	} else {
+	if !apply {
 		fmt.Println("No changes made.")
+		return nil
 	}
+	return applyFixes(needsFix, svc, composePath, dynamicDir)
 }
 
 // collectFixes gathers checks that need fixing.
@@ -635,11 +662,12 @@ func showGenericRecommendations() {
 	fmt.Println("  See: bosun upgrade traefik --help")
 }
 
-// applyFixes writes the recommended fixes to the compose and dynamic config files.
-func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, dynamicDir string) {
+// applyFixes writes the recommended fixes to the compose and dynamic config
+// files. It returns every failure joined, after attempting both targets.
+func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, dynamicDir string) error {
 	var commandFlags []string
 	var dynamicFixes []traefikCheck
-	hadErrors := false
+	var applyErrs []error
 
 	for _, f := range fixes {
 		if f.FixTarget == "command" {
@@ -653,7 +681,7 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	if len(commandFlags) > 0 {
 		if err := applyCommandFixes(composePath, svc, commandFlags); err != nil {
 			_, _ = ui.Red.Printf("  x Failed to update compose file: %v\n", err)
-			hadErrors = true
+			applyErrs = append(applyErrs, fmt.Errorf("update compose file %s: %w", composePath, err))
 		} else {
 			_, _ = ui.Green.Printf("  * Updated %s with %d command flags\n", composePath, len(commandFlags))
 		}
@@ -663,13 +691,20 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	if len(dynamicFixes) > 0 {
 		if dynamicDir == "" {
 			_, _ = ui.Yellow.Println("  ! No dynamic config directory — showing fixes for manual application")
+			skipped := make([]string, 0, len(dynamicFixes))
 			for _, f := range dynamicFixes {
 				fmt.Println(f.Fix)
+				skipped = append(skipped, f.Name)
 			}
+			// Not applied is not applied: the command must not report success,
+			// or a script that ran it would believe the middlewares are in place.
+			applyErrs = append(applyErrs, fmt.Errorf(
+				"dynamic config fixes not applied (%s): no dynamic config directory found, pass one with --dynamic <dir>",
+				strings.Join(skipped, ", ")))
 		} else {
 			if err := applyDynamicFixes(dynamicDir, dynamicFixes); err != nil {
 				_, _ = ui.Red.Printf("  x Failed to update dynamic config: %v\n", err)
-				hadErrors = true
+				applyErrs = append(applyErrs, fmt.Errorf("update dynamic config in %s: %w", dynamicDir, err))
 			} else {
 				_, _ = ui.Green.Printf("  * Updated dynamic config in %s\n", dynamicDir)
 			}
@@ -677,11 +712,12 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	}
 
 	fmt.Println()
-	if hadErrors {
+	if len(applyErrs) > 0 {
 		_, _ = ui.Yellow.Println("Some fixes could not be applied. Review the errors above and apply manually.")
-	} else {
-		_, _ = ui.Green.Println("Fixes applied! Restart Traefik to pick up changes.")
+		return errors.Join(applyErrs...)
 	}
+	_, _ = ui.Green.Println("Fixes applied! Restart Traefik to pick up changes.")
+	return nil
 }
 
 // applyCommandFixes adds missing command flags to the Traefik service in a compose file.
@@ -728,10 +764,10 @@ func addCommandFlagsToNode(doc *yaml.Node, flags []string) error {
 		return fmt.Errorf("no 'services' key found")
 	}
 
-	// Find "traefik" service
-	traefikNode := findMapValue(servicesNode, "traefik")
+	// Find the Traefik service by image or name, as parseTraefikService does.
+	traefikNode := findTraefikServiceNode(servicesNode)
 	if traefikNode == nil {
-		return fmt.Errorf("no 'traefik' service found")
+		return fmt.Errorf("no traefik service found (image traefik or a service named traefik)")
 	}
 
 	// Find or create "command" key
@@ -740,24 +776,14 @@ func addCommandFlagsToNode(doc *yaml.Node, flags []string) error {
 		// Add command as a sequence
 		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: "command"}
 		valueNode := &yaml.Node{Kind: yaml.SequenceNode}
-		for _, flag := range flags {
-			valueNode.Content = append(valueNode.Content, &yaml.Node{
-				Kind:  yaml.ScalarNode,
-				Value: flag,
-			})
-		}
+		mergeCommandFlags(valueNode, flags)
 		traefikNode.Content = append(traefikNode.Content, keyNode, valueNode)
 		return nil
 	}
 
-	// Add flags to existing command
+	// Merge flags into the existing command
 	if commandNode.Kind == yaml.SequenceNode {
-		for _, flag := range flags {
-			commandNode.Content = append(commandNode.Content, &yaml.Node{
-				Kind:  yaml.ScalarNode,
-				Value: flag,
-			})
-		}
+		mergeCommandFlags(commandNode, flags)
 		return nil
 	}
 
@@ -774,16 +800,68 @@ func addCommandFlagsToNode(doc *yaml.Node, flags []string) error {
 				Value: item,
 			})
 		}
-		for _, flag := range flags {
-			commandNode.Content = append(commandNode.Content, &yaml.Node{
-				Kind:  yaml.ScalarNode,
-				Value: flag,
-			})
-		}
+		mergeCommandFlags(commandNode, flags)
 		return nil
 	}
 
 	return fmt.Errorf("unsupported command format")
+}
+
+// findTraefikServiceNode returns the Traefik service in a compose services
+// mapping, matched by image or name like parseTraefikService. With several
+// matches it returns the one with the lowest name, so both functions agree.
+func findTraefikServiceNode(services *yaml.Node) *yaml.Node {
+	if services.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	var best *yaml.Node
+	bestName := ""
+	for i := 0; i+1 < len(services.Content); i += 2 {
+		name := services.Content[i].Value
+		node := services.Content[i+1]
+
+		image := ""
+		if imageNode := findMapValue(node, "image"); imageNode != nil {
+			image = imageNode.Value
+		}
+		if !isTraefikService(name, image) {
+			continue
+		}
+		if best == nil || name < bestName {
+			best, bestName = node, name
+		}
+	}
+	return best
+}
+
+// commandFlagKey returns the part of a command flag before its value, such as
+// --providers.docker.exposedbydefault for --providers.docker.exposedbydefault=true.
+func commandFlagKey(flag string) string {
+	key, _, _ := strings.Cut(flag, "=")
+	return key
+}
+
+// mergeCommandFlags applies flags to a command sequence. A flag whose name is
+// already present (ignoring case) has its value replaced in place, so a fix
+// never leaves two settings for one option; a flag that is absent is appended.
+func mergeCommandFlags(command *yaml.Node, flags []string) {
+	for _, flag := range flags {
+		key := commandFlagKey(flag)
+		replaced := false
+		for _, item := range command.Content {
+			if item.Kind == yaml.ScalarNode && strings.EqualFold(commandFlagKey(item.Value), key) {
+				item.Value = flag
+				replaced = true
+			}
+		}
+		if !replaced {
+			command.Content = append(command.Content, &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Value: flag,
+			})
+		}
+	}
 }
 
 // findMapValue finds a value node in a YAML mapping by key.
@@ -799,9 +877,9 @@ func findMapValue(mapping *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// applyDynamicFixes writes middleware definitions to the dynamic config directory.
-func applyDynamicFixes(dynamicDir string, fixes []traefikCheck) error {
-	// Merge all middleware definitions into a single file
+// collectFixMiddlewares parses the middleware definitions out of the dynamic
+// fixes. A fix whose YAML does not parse is skipped.
+func collectFixMiddlewares(fixes []traefikCheck) map[string]any {
 	middlewares := make(map[string]any)
 
 	for _, f := range fixes {
@@ -830,42 +908,161 @@ func applyDynamicFixes(dynamicDir string, fixes []traefikCheck) error {
 		}
 	}
 
-	if len(middlewares) == 0 {
-		return nil
+	return middlewares
+}
+
+// middlewaresTargetFile picks the file that receives new middlewares:
+// middlewares.yml when it exists, else the first YAML file in the directory
+// that already defines http.middlewares, else a new middlewares.yml.
+func middlewaresTargetFile(dynamicDir string) string {
+	defaultFile := filepath.Join(dynamicDir, "middlewares.yml")
+	if _, err := os.Stat(defaultFile); err == nil {
+		return defaultFile
 	}
 
-	// Check if a middlewares file already exists
-	targetFile := filepath.Join(dynamicDir, "middlewares.yml")
-	if existingData, err := os.ReadFile(targetFile); err == nil {
-		// Merge with existing file
-		var existing struct {
+	entries, err := os.ReadDir(dynamicDir)
+	if err != nil {
+		return defaultFile
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+
+		path := filepath.Join(dynamicDir, name)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		var probe struct {
 			HTTP struct {
 				Middlewares map[string]any `yaml:"middlewares"`
 			} `yaml:"http"`
 		}
-		if err := yaml.Unmarshal(existingData, &existing); err == nil && existing.HTTP.Middlewares != nil {
-			for name, mw := range middlewares {
-				if _, exists := existing.HTTP.Middlewares[name]; !exists {
-					existing.HTTP.Middlewares[name] = mw
-				}
-			}
-			middlewares = existing.HTTP.Middlewares
+		if yaml.Unmarshal(data, &probe) == nil && probe.HTTP.Middlewares != nil {
+			return path
 		}
 	}
+	return defaultFile
+}
 
-	output := struct {
-		HTTP struct {
-			Middlewares map[string]any `yaml:"middlewares"`
-		} `yaml:"http"`
-	}{}
-	output.HTTP.Middlewares = middlewares
-
-	data, err := yaml.Marshal(output)
-	if err != nil {
-		return err
+// childMapping returns the mapping stored under key in parent, creating it when
+// the key is absent or holds null. A key that holds anything else is an error:
+// the caller must not replace configuration it does not understand.
+func childMapping(parent *yaml.Node, key string) (*yaml.Node, error) {
+	value := findMapValue(parent, key)
+	if value == nil {
+		value = &yaml.Node{Kind: yaml.MappingNode}
+		parent.Content = append(parent.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, value)
+		return value, nil
 	}
 
-	return writeFilePreservePerms(targetFile, data)
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		value.Kind = yaml.MappingNode
+		value.Tag = ""
+		value.Value = ""
+		value.Style = 0
+		return value, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%q is not a mapping", key)
+	}
+	return value, nil
+}
+
+// dynamicMiddlewaresNode returns the http.middlewares mapping of a parsed
+// dynamic config, creating the parts that are missing.
+func dynamicMiddlewaresNode(doc *yaml.Node) (*yaml.Node, error) {
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+	}
+	if len(doc.Content) == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+
+	root := doc.Content[0]
+	if root.Kind == yaml.ScalarNode && root.Tag == "!!null" {
+		root.Kind = yaml.MappingNode
+		root.Tag = ""
+		root.Value = ""
+	}
+	if root.Kind != yaml.MappingNode {
+		return nil, errors.New("top level is not a mapping")
+	}
+
+	httpNode, err := childMapping(root, "http")
+	if err != nil {
+		return nil, err
+	}
+	return childMapping(httpNode, "middlewares")
+}
+
+// applyDynamicFixes adds the recommended middlewares to the dynamic config
+// directory. It edits the file as a YAML tree, so routers, services, tls,
+// other middlewares and comments are kept, and it refuses to touch a file it
+// cannot parse rather than overwrite it.
+func applyDynamicFixes(dynamicDir string, fixes []traefikCheck) error {
+	middlewares := collectFixMiddlewares(fixes)
+	if len(middlewares) == 0 {
+		return nil
+	}
+
+	targetFile := middlewaresTargetFile(dynamicDir)
+
+	var doc yaml.Node
+	existing, err := os.ReadFile(targetFile)
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(existing, &doc); err != nil {
+			return fmt.Errorf("parse %s: %w", targetFile, err)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("read %s: %w", targetFile, err)
+	}
+
+	middlewaresNode, err := dynamicMiddlewaresNode(&doc)
+	if err != nil {
+		return fmt.Errorf("%s: %w", targetFile, err)
+	}
+
+	names := make([]string, 0, len(middlewares))
+	for name := range middlewares {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	added := false
+	for _, name := range names {
+		if findMapValue(middlewaresNode, name) != nil {
+			continue
+		}
+		var value yaml.Node
+		if err := value.Encode(middlewares[name]); err != nil {
+			return fmt.Errorf("encode middleware %s: %w", name, err)
+		}
+		middlewaresNode.Content = append(middlewaresNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: name}, &value)
+		added = true
+	}
+	if !added {
+		return nil
+	}
+
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&doc); err != nil {
+		return fmt.Errorf("marshal %s: %w", targetFile, err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("marshal %s: %w", targetFile, err)
+	}
+
+	return writeFilePreservePerms(targetFile, buf.Bytes())
 }
 
 // writeFilePreservePerms writes data to a file, preserving existing permissions.
@@ -895,4 +1092,3 @@ func fileContainsGoTemplate(path string) bool {
 	content := string(data)
 	return strings.Contains(content, "{{") && strings.Contains(content, "}}")
 }
-
