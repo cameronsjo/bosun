@@ -317,6 +317,7 @@ func buildValidateReconcileConfig() (*reconcile.Config, error) {
 	cfg.DryRun = true
 	cfg.Force = false
 	clearValidateSideEffects(cfg)
+	cfg.StagingDir = reconcile.DefaultConfig().StagingDir // STAGED BREAK (c): STAGING_DIR is ignored again
 	return cfg, nil
 }
 
@@ -373,7 +374,7 @@ func runFullDryRunWith(run validateRunner) error {
 	var failures []error
 	for _, target := range targets {
 		targetCfg := cfg.ConfigForTarget(target)
-		clearValidateSideEffects(targetCfg)
+		// STAGED BREAK (b): the per-target clear is removed
 		targetCfg.DryRun = true
 		targetCfg.Force = false
 
@@ -405,7 +406,7 @@ func runFullDryRunTarget(cfg *reconcile.Config, run validateRunner) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	return run(ctx, cfg)
+	return run(ctx, cfg, reconcilerOptionsForCLI()...) // STAGED BREAK (a): attaches the CLI reconciler options
 }
 
 // isValidGitURL checks if a string looks like a valid Git URL.
