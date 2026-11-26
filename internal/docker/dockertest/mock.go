@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -37,6 +38,7 @@ type MockDockerAPI struct {
 	CloseFunc            func() error
 
 	// Call tracking.
+	mu                    sync.Mutex
 	PingCalls             int
 	ContainerListCalls    int
 	ContainerInspectCalls int
@@ -133,7 +135,9 @@ func (m *MockDockerAPI) ContainerRemove(ctx context.Context, containerID string,
 
 // ContainerStats implements docker.DockerAPI.
 func (m *MockDockerAPI) ContainerStats(ctx context.Context, containerID string, options client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
+	m.mu.Lock()
 	m.ContainerStatsCalls++
+	m.mu.Unlock()
 	if m.ContainerStatsFunc != nil {
 		return m.ContainerStatsFunc(ctx, containerID, options)
 	}

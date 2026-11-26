@@ -107,6 +107,7 @@ func showRecentErrors() {
 
 		errorCount := 0
 
+	containerLoop:
 		for _, ctr := range containers {
 			logs, err := client.GetContainerLogs(ctx, ctr.Name, ContainerLogTailLines)
 			if err != nil {
@@ -116,7 +117,7 @@ func showRecentErrors() {
 			lines := strings.Split(logs, "\n")
 			for _, line := range lines {
 				if errorCount >= MaxErrorDisplay {
-					break
+					break containerLoop
 				}
 				// Clean up Docker log prefix (first 8 bytes are header)
 				cleanLine := stripDockerLogPrefix(line)
