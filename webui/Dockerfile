@@ -20,8 +20,9 @@ RUN apk add --no-cache gettext
 # Remove default nginx config
 RUN rm /etc/nginx/conf.d/default.conf
 
-# Copy nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx config template and shared security headers snippet
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh /docker-entrypoint.sh
@@ -29,9 +30,6 @@ RUN chmod +x /docker-entrypoint.sh
 
 # Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
-
-# Runtime configuration template for bearer token injection
-COPY config.template.js /etc/nginx/templates/config.js.template
 
 # Create non-root user for nginx
 RUN addgroup -g 1001 -S appgroup && \
