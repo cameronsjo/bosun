@@ -61,8 +61,7 @@ verify_checksum() {
     elif command -v shasum &>/dev/null; then
         actual=$(shasum -a 256 "$file" | awk '{print $1}')
     else
-        warn "No sha256sum or shasum found, skipping verification"
-        return 0
+        error "Neither sha256sum nor shasum found; refusing to install unverified binary"
     fi
 
     if [ "$expected" != "$actual" ]; then
@@ -76,7 +75,7 @@ verify_checksum() {
 main() {
     info "Installing ${BINARY}..."
 
-    local platform version archive_name download_url checksums_url tmp_dir
+    local platform version archive_name download_url checksums_url
 
     platform=$(detect_platform)
     info "Detected platform: ${platform}"
@@ -93,23 +92,23 @@ main() {
     download_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
     checksums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
 
-    tmp_dir=$(mktemp -d)
-    trap "rm -rf $tmp_dir" EXIT
+    TMP_DIR=$(mktemp -d)
+    trap 'rm -rf "${TMP_DIR:-}"' EXIT
 
     info "Downloading ${archive_name}..."
-    curl -fsSL -o "${tmp_dir}/${archive_name}" "$download_url" ||
+    curl -fsSL -o "${TMP_DIR}/${archive_name}" "$download_url" ||
         error "Failed to download ${download_url}"
 
-    verify_checksum "${tmp_dir}/${archive_name}" "$checksums_url"
+    verify_checksum "${TMP_DIR}/${archive_name}" "$checksums_url"
 
     info "Extracting..."
-    tar -xzf "${tmp_dir}/${archive_name}" -C "$tmp_dir"
+    tar -xzf "${TMP_DIR}/${archive_name}" -C "$TMP_DIR"
 
     info "Installing to ${INSTALL_DIR}..."
     if [ -w "$INSTALL_DIR" ]; then
-        mv "${tmp_dir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+        mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     else
-        sudo mv "${tmp_dir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+        sudo mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     fi
     chmod +x "${INSTALL_DIR}/${BINARY}"
 

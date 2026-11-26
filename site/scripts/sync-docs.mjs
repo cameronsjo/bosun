@@ -91,22 +91,38 @@ function buildAllowlistMap(docFiles, adrFiles) {
 // following fence aborts the sync rather than shipping a half-swapped page.
 const DIAGRAM_MARKER_RE = /<!--\s*site-diagram:\s*([a-z0-9-]+)\s*-->\s*\n```[^\n]*\n[\s\S]*?\n```/g;
 const REPO_DIAGRAMS_DIR = path.join(REPO_ROOT, 'docs/diagrams');
-const SVG_FONT_IMPORT_RE = /<style[^>]*>\s*@import\s+url\((['"]).*?\1\);?\s*<\/style>/gi;
+const SVG_FONT_IMPORT_RE = /<style[^>]*>\s*@import\s+url\((['"])https:\/\/fonts\.googleapis\.com\/[^)]*\1\);?\s*<\/style>/gi;
+const SVG_ACTIVE_CONTENT = [
+  [/<script/i, 'script element'],
+  [/[\s/]on[a-z]+\s*=/i, 'event-handler attribute'],
+  [/<foreignObject/i, 'foreignObject element'],
+  [/(?:xlink:)?href\s*=\s*['"]?(?!#)\S/i, 'non-fragment href'],
+  [/javascript:/i, 'javascript: URL'],
+  [/@import|url\(\s*['"]?\s*(?:https?:)?\/\//i, 'external reference'],
+];
 
 async function swapEditorialDiagrams(body, sourceFile) {
   const names = [...body.matchAll(/<!--\s*site-diagram:\s*([a-z0-9-]+)\s*-->/g)].map((m) => m[1]);
   if (names.length === 0) return body;
 
+  const { DIAGRAM_NAMES } = await import('../../scripts/diagrams/manifest.mjs');
+  const allowedDiagrams = new Set(DIAGRAM_NAMES);
+
   const svgs = new Map();
   for (const name of names) {
+    if (!allowedDiagrams.has(name)) {
+      throw new Error(`${sourceFile}: site-diagram "${name}" is not in scripts/diagrams/manifest.mjs`);
+    }
     const raw = await fs.readFile(path.join(REPO_DIAGRAMS_DIR, `${name}.svg`), 'utf8').catch(() => {
       throw new Error(`${sourceFile}: site-diagram "${name}" has no docs/diagrams/${name}.svg`);
     });
     const svgMatch = raw.match(/<svg[\s\S]*?<\/svg>/);
     if (!svgMatch) throw new Error(`${sourceFile}: docs/diagrams/${name}.svg has no <svg> root`);
     const svg = svgMatch[0].replace(SVG_FONT_IMPORT_RE, '');
-    if (/@import|url\(\s*['"]?\s*(?:https?:)?\/\//i.test(svg)) {
-      throw new Error(`${sourceFile}: ${name}.svg carries an external reference after stripping`);
+    for (const [re, what] of SVG_ACTIVE_CONTENT) {
+      if (re.test(svg)) {
+        throw new Error(`${sourceFile}: ${name}.svg carries disallowed ${what}`);
+      }
     }
     // Collapse to one line: markdown re-parses indented lines inside an HTML
     // block as a code block, which shreds a pretty-printed SVG.
