@@ -34,28 +34,6 @@ func setupGuardedSSHShim(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// setupGuardedSCPShim installs an `scp` shim that no-ops when the destination is
-// under /boot (Compose Manager), else performs a local copy.
-func setupGuardedSCPShim(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	shim := "#!/bin/sh\n" +
-		"while [ $# -gt 0 ]; do\n" +
-		"  case \"$1\" in\n" +
-		"    -o) shift 2 ;;\n" +
-		"    -*) shift ;;\n" +
-		"    *) break ;;\n" +
-		"  esac\n" +
-		"done\n" +
-		"dst=\"${2#*:}\"\n" +
-		"case \"$dst\" in\n" +
-		"  /boot/*) exit 0 ;;\n" +
-		"esac\n" +
-		"exec cp \"$1\" \"$dst\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "scp"), []byte(shim), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 // setupComposePSDockerShim installs a `docker` shim whose `compose up` fails but
 // `compose ps` reports a running-but-unhealthy container (exit 0). ComposeUpRemote
 // then classifies the failure as unhealthy-only and returns ErrComposeUnhealthy.
@@ -90,7 +68,9 @@ func buildRemoteStaging(t *testing.T) (string, string, string) {
 
 func TestDeployRemoteDispatch_UnhealthyIsNonFatal(t *testing.T) {
 	setupGuardedSSHShim(t)
-	setupGuardedSCPShim(t)
+	// The Compose Manager mirror streams over the guarded ssh shim, which
+	// no-ops every /boot command for both its mkdir and stream legs.
+	scpLog := setupSCPTripwire(t)
 	setupSha256sumShim(t)
 	setupComposePSDockerShim(t) // compose up fails, ps reports unhealthy-only
 
@@ -109,6 +89,7 @@ func TestDeployRemoteDispatch_UnhealthyIsNonFatal(t *testing.T) {
 	require.NotNil(t, result)
 	assert.NotEmpty(t, result.ManagedFiles, "remote deploy seeds the managed-file manifest from the local staging walk")
 	assert.Equal(t, "compose-new", readMarker(t, filepath.Join(remoteAppdata, "compose"), "core.yml"))
+	assertSCPNeverInvoked(t, scpLog)
 }
 
 func TestDeployRemoteDispatch_RejectsOptionInjectionHost(t *testing.T) {
@@ -131,7 +112,7 @@ func TestDeployRemoteDispatch_RejectsOptionInjectionHost(t *testing.T) {
 
 func TestDeployRemoteDispatch_RealFailureTriggersRollback(t *testing.T) {
 	setupGuardedSSHShim(t)
-	setupGuardedSCPShim(t)
+	setupSCPTripwire(t)
 	setupSha256sumShim(t)
 	setupDockerShim(t, 1) // every docker invocation fails: up, classify ps, and the rollback's up
 

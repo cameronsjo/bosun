@@ -50,9 +50,13 @@ func TestEnsureRemoteDir_QuotesShellMetacharacters(t *testing.T) {
 	}
 }
 
+// The DeployRemoteFile tests use setupSSHShim alone: the single-file stream
+// runs through `/bin/sh -c`, so remote shell evaluation of every path is
+// modeled, which the old local-copy scp shim never did.
+
 func TestDeployRemoteFile_QuotesSpacedPath(t *testing.T) {
 	setupSSHShim(t)
-	setupSCPShim(t)
+	callLog := setupSCPTripwire(t)
 	base := t.TempDir()
 	source := filepath.Join(base, "config.yml")
 	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
@@ -63,23 +67,40 @@ func TestDeployRemoteFile_QuotesSpacedPath(t *testing.T) {
 
 	got, err := os.ReadFile(target)
 	require.NoError(t, err)
-	assert.Equal(t, "v1", string(got), "the atomic mv must target the spaced path as one argument")
+	assert.Equal(t, "v1", string(got), "the stream must target the spaced path as one argument")
+	assertSCPNeverInvoked(t, callLog)
 }
 
 func TestDeployRemoteFile_QuotesShellMetacharacters(t *testing.T) {
-	setupSSHShim(t)
-	setupSCPShim(t)
-	base := t.TempDir()
-	source := filepath.Join(base, "config.yml")
-	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
-	target := filepath.Join(base, "remote", "config; false-$(false)-'quoted'-[prod]*.yml")
+	canary := filepath.Join(t.TempDir(), "canary")
+	cases := []struct {
+		name string
+		file string
+	}{
+		{name: "mixed metacharacters", file: "config; false-$(false)-'quoted'-[prod]*.yml"},
+		{name: "command substitution canary", file: `config-$(touch "$BOSUN_CANARY").yml`},
+		{name: "backtick canary", file: "config-`touch \"$BOSUN_CANARY\"`.yml"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupSSHShim(t)
+			callLog := setupSCPTripwire(t)
+			t.Setenv("BOSUN_CANARY", canary)
+			base := t.TempDir()
+			source := filepath.Join(base, "config.yml")
+			require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
+			target := filepath.Join(base, "remote", tc.file)
 
-	d := &DeployOps{}
-	require.NoError(t, d.DeployRemoteFile(context.Background(), source, "user@testhost", target))
+			d := &DeployOps{}
+			require.NoError(t, d.DeployRemoteFile(context.Background(), source, "user@testhost", target))
 
-	got, err := os.ReadFile(target)
-	require.NoError(t, err)
-	assert.Equal(t, "v1", string(got), "mv must treat shell metacharacters as literal path bytes")
+			got, err := os.ReadFile(target)
+			require.NoError(t, err)
+			assert.Equal(t, "v1", string(got), "the stream must treat shell metacharacters as literal path bytes")
+			assert.NoFileExists(t, canary, "no part of the remote path may be evaluated by the remote shell")
+			assertSCPNeverInvoked(t, callLog)
+		})
+	}
 }
 
 func TestCleanupRemotePath_QuotesShellMetacharacters(t *testing.T) {

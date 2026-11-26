@@ -186,7 +186,7 @@ func TestDeployRemote_PropagatesComposeMkdirError(t *testing.T) {
 
 	remoteAppdata := filepath.Join(base, "remote-appdata")
 	composeTarget := filepath.Join(remoteAppdata, "compose")
-	setupGuardedSCPShim(t)
+	setupSCPTripwire(t)
 	setupSelectiveMkdirFailureSSHShim(t, composeTarget)
 	r := NewReconciler(&Config{
 		TargetHost:        "user@testhost",
@@ -212,7 +212,7 @@ func TestDeployRemote_ComposeManagerMkdirErrorWarnsAndSkipsOptionalSync(t *testi
 
 	const composeManagerDir = "/boot/config/plugins/compose.manager/projects/core"
 	remoteAppdata := filepath.Join(base, "remote-appdata")
-	setupGuardedSCPShim(t)
+	setupSCPTripwire(t)
 	failureLog := setupSelectiveMkdirFailureSSHShim(t, composeManagerDir)
 	r := NewReconciler(&Config{
 		TargetHost:        "user@testhost",

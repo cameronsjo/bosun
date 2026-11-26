@@ -849,14 +849,17 @@ bosun reconcile -l             # Force local mode
 
 ### Remote Deployment
 
-Deploy to a remote host via SSH (tar-over-SSH for efficient transfer).
+Deploy to a remote host via SSH: tar-over-SSH for directories, and an SSH
+stream for individual files. Bosun does not use `scp`.
 
 ```bash
 bosun reconcile -r user@host
 ```
 
 Requires SSH key authentication and POSIX `sh` plus `tar`, `find`, `readlink`,
-`sha256sum`, and a `test` implementation with `-ef` support on the remote host.
+`sha256sum`, `cat`, `chmod`, `mv`, `mkdir`, `rmdir`, and a `test`
+implementation with `-ef` support on the remote host. `sha256sum` applies to
+single files as well as directories.
 Missing `sha256sum` fails the first attempt without retrying because integrity
 verification cannot succeed until the host capability changes. Any other failure
 reported by the remote command (exit status other than SSH's 255, such as a full
@@ -887,6 +890,18 @@ Normal success and error paths remove the workspace; after an unclean Bosun or
 host crash, operators may remove stale `bosun-deploy-*` workspaces owned by the
 Bosun service account once no reconcile process is running.
 
+A single file is streamed into a private `.deploy-tmp-<random>` directory
+beside the target, which each attempt creates with an exclusive `mkdir` under
+umask 077. The received file must match the local file's SHA-256 before it
+replaces the target, so a truncated transfer leaves the existing file
+untouched. The deployed file keeps the source file's permission bits, masked by
+the remote umask. Every remote path is passed to the remote shell as one quoted
+word. Cleanup removes only a staging directory the same attempt created; an
+entry already at that name fails the attempt and is left alone. The optional
+Compose Manager mirror under `/boot/config` sits on the FAT-formatted Unraid
+flash, which cannot store permission bits, so a failed mode change there is
+logged and tolerated.
+
 The staged tree is promoted with a retain-old rename-swap: the live target is moved aside (never deleted first), the new tree is moved in, and the retained copy is removed only on success — so an interrupted deploy leaves the old or the new tree, never an empty target. A missing target left by a prior interrupted deploy is self-healed on the next run from the newest retained copy.
 
 #### SSH Host Key Verification
@@ -900,7 +915,7 @@ The Git channel fails closed when neither path exists or the selected file is
 malformed; daemon startup and one-shot validation report an actionable error
 before network access. `~/.ssh/known_hosts` is intentionally excluded from
 Git — ephemeral entries from manual `ssh` commands inside a container can
-cause go-git key mismatches. Remote deploy `ssh` and `scp` commands use strict
+cause go-git key mismatches. Remote deploy `ssh` commands use strict
 checking against the selected file; when no configured file exists they use
 OpenSSH's normal trust stores with `StrictHostKeyChecking=yes`, so an unpinned
 host is refused rather than accepted with TOFU. Set

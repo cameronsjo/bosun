@@ -2701,7 +2701,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	// TargetHost is re-read from the watched repo after every pull, so a
 	// repo-push attacker controls it; an unvalidated value like
 	// `-oProxyCommand=<cmd>` would reach ssh as an option and execute on the
-	// daemon. Every other ssh/scp boundary validates first; this restores that
+	// daemon. Every other ssh boundary validates first; this restores that
 	// invariant for the whole deployRemote scope.
 	if err := validateHost(host); err != nil {
 		return nil, fmt.Errorf("invalid SSH host: %w", err)
@@ -2762,6 +2762,8 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 
 	// Sync to Compose Manager (Unraid-specific, remote-only) only when compose is a deploy target.
 	// This is optional — failure is non-fatal because not all hosts have the Compose Manager plugin.
+	// The Unraid flash is FAT, so DeployRemoteFile tolerates and logs a failed
+	// mode change under composeManagerMirrorPrefix, and only there.
 	composeManagerDir := "/boot/config/plugins/compose.manager/projects/core"
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing core compose to Compose Manager...")

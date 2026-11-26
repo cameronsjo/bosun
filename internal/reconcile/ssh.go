@@ -502,7 +502,7 @@ func buildRemoteStageCommand(tmpRoot, stagedDir string) string {
 		"mkdir " + staged + " || { status=$?; rm -rf " + root + "; exit $status; }"
 }
 
-// hostKeyOptions returns the ssh/scp `-o` flags that enforce the configured
+// hostKeyOptions returns the ssh `-o` flags that enforce the configured
 // host-key policy on the exec'd deploy path, so it honors the same
 // BOSUN_SSH_KNOWN_HOSTS / BOSUN_SSH_INSECURE_HOST_KEY config as the go-git
 // clone/pull path (git.go's getHostKeyCallback), including the on-disk
@@ -556,9 +556,10 @@ func hostKeyOptions() []string {
 // controlled candidate list.
 var knownHostsCandidates = buildKnownHostsPaths
 
-// execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the
-// host-key policy flags (hostKeyOptions) prepended before the caller's args, so
-// every exec'd ssh/scp call gets the same policy and it never drifts per-site.
+// execWithHostKeyOptions builds an exec.Cmd for name with the host-key policy
+// flags (hostKeyOptions) prepended before the caller's args, so every exec'd
+// ssh call gets the same policy and it never drifts per-site. The deploy
+// channel is ssh-only (#795).
 func execWithHostKeyOptions(ctx context.Context, name string, args ...string) *exec.Cmd {
 	full := append(hostKeyOptions(), args...)
 	return exec.CommandContext(ctx, name, full...)
@@ -570,16 +571,10 @@ func sshExecCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return execWithHostKeyOptions(ctx, "ssh", args...)
 }
 
-// newSSHTransferCommand is the tar-over-SSH command seam. Tests replace it to
-// exercise an SSH spawn failure after local archive verification succeeds.
+// newSSHTransferCommand is the payload-transfer command seam, used by the
+// tar-over-SSH extract and the single-file stream. Tests replace it to
+// exercise spawn failures and damaged or failing transfers.
 var newSSHTransferCommand = sshExecCommand
-
-// scpExecCommand builds an `scp` command with the host-key policy flags
-// prepended before the caller's args. Counterpart to sshExecCommand for the
-// single-file copy path.
-func scpExecCommand(ctx context.Context, args ...string) *exec.Cmd {
-	return execWithHostKeyOptions(ctx, "scp", args...)
-}
 
 // remoteCleanupContext preserves correlation values without inheriting the
 // failed deploy's cancellation or deadline, then adds a short cleanup bound.
@@ -702,7 +697,7 @@ func isTransientSSHError(err error) bool {
 
 func containsTransientSSHPattern(message string) bool {
 	// A refused host key or a failed login is permanent even when a transport
-	// phrase follows it: OpenSSH 9+ scp prints "scp: Connection closed" after
+	// phrase follows it: OpenSSH can print "Connection closed by <host>" after
 	// either, and retrying a refused host key only repeats the refusal and
 	// delays the operator's guidance (#795).
 	switch classifySSHError(message) {
@@ -888,7 +883,7 @@ func hostKeyGuidance() string {
 }
 
 // annotateHostKeyError appends hostKeyGuidance to an error whose text reports a
-// host-key verification failure from ssh or scp. Other errors pass through.
+// host-key verification failure from ssh. Other errors pass through.
 func annotateHostKeyError(err error) error {
 	if err == nil || classifySSHError(err.Error()) != "host_key" || strings.Contains(err.Error(), hostKeyGuidanceMarker) {
 		return err
@@ -1220,10 +1215,70 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	return deployErr
 }
 
-// DeployRemoteFile syncs a single file to a remote host using scp.
+// composeManagerMirrorPrefix is the FAT-formatted Unraid flash path that holds
+// the optional Compose Manager mirror. FAT cannot store permission bits, so a
+// failed mode change is tolerated for targets under it, and only there.
+const composeManagerMirrorPrefix = "/boot/config/"
+
+// remoteModeUnsupportedMarker is printed to stderr by the single-file stream
+// when a tolerated mode change fails, so the deploy can log it.
+const remoteModeUnsupportedMarker = "bosun: mode change unsupported on target filesystem"
+
+// tolerateRemoteModeFailure reports whether a failed chmod on targetFile is
+// tolerated: true only for the Compose Manager mirror on the Unraid flash.
+func tolerateRemoteModeFailure(targetFile string) bool {
+	return strings.HasPrefix(path.Clean(targetFile), composeManagerMirrorPrefix)
+}
+
+// buildRemoteFileStreamCommand returns the POSIX sh command that receives a
+// single file on stdin into stagedFile (inside the private stageDir), checks
+// its SHA-256 against wantSHA, sets perm masked by the remote umask, and moves
+// it over targetFile. Every path and the hash reach the shell as one quoted
+// word, and every operand follows "--".
+//
+// Exit 78 means the remote lacks sha256sum and exit 79 a checksum mismatch;
+// classifyRemoteExit maps both. A dropped connection ends `cat` with EOF and
+// exit 0, so the hash check is what stops a truncated file from replacing the
+// target.
+//
+// The mode arithmetic assumes POSIX `umask` prints octal and that `$(( ))`
+// reads a leading zero as octal; dash, busybox ash, and bash all do.
+func buildRemoteFileStreamCommand(stageDir, stagedFile, targetFile, wantSHA string, perm os.FileMode, tolerateModeFailure bool) string {
+	staged := shellquote.Join(stagedFile)
+	chmodCmd := fmt.Sprintf("chmod -- \"$(printf '%%o' $((0%o & ~0$u)))\" %s", uint32(perm.Perm()), staged)
+	if tolerateModeFailure {
+		chmodCmd += " || echo " + shellquote.Join(remoteModeUnsupportedMarker) + " >&2"
+	}
+	return fmt.Sprintf(
+		"set -eu; u=$(umask); umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ] || exit %d; %s; mv -f -- %s %s; rmdir -- %s || :",
+		remoteIntegrityUnavailableExit,
+		staged, staged, shellquote.Join(wantSHA),
+		remoteTransferChecksumMismatchExit,
+		chmodCmd,
+		staged, shellquote.Join(targetFile),
+		shellquote.Join(stageDir),
+	)
+}
+
+// buildRemoteFileStageCommand creates the private staging directory for one
+// single-file attempt. The mkdir is exclusive (no -p): an entry already at the
+// name, whatever its type, fails the attempt and is never reused or removed.
+func buildRemoteFileStageCommand(stageDir string) string {
+	return "set -eu; umask 077; mkdir -- " + shellquote.Join(stageDir)
+}
+
+// DeployRemoteFile syncs a single file to a remote host over SSH (#795).
 // Uses RemoteDeployTimeout if the parent context has no deadline.
-// Retries on transient SSH errors with exponential backoff.
-// Performs atomic copy: scp to temp file, then move to target.
+// Retries on transient SSH errors with exponential backoff, and on a transfer
+// checksum mismatch with fresh staging.
+//
+// Each attempt creates a private staging directory beside the target with an
+// exclusive mkdir, streams the file into it, verifies its SHA-256 against the
+// local file, sets the source mode masked by the remote umask, and moves it
+// over the target. Cleanup removes only a staging directory the same attempt
+// created. scp is not used: legacy SCP passes the remote path through the
+// remote shell and SFTP-mode scp does not, so no single quoting is right for
+// both.
 func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost, targetFile string) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
@@ -1255,43 +1310,91 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		defer cancel()
 	}
 
+	// Open the source once: its mode and hash come from this descriptor, and
+	// every attempt streams the same descriptor after a rewind. The source is
+	// the daemon-owned staging tree, so one descriptor is enough against a
+	// swap between hashing and sending.
+	source, err := os.Open(sourceFile)
+	if err != nil {
+		return fmt.Errorf("open source file %s: %w", sourceFile, err)
+	}
+	defer func() { _ = source.Close() }()
+	// Stat on an open descriptor has no realistic failure mode; the branch is
+	// kept so a failure is reported rather than deploying with a zero mode.
+	info, err := source.Stat()
+	if err != nil {
+		return fmt.Errorf("stat source file %s: %w", sourceFile, err)
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, source); err != nil {
+		return fmt.Errorf("hash source file %s: %w", sourceFile, err)
+	}
+	wantSHA := hex.EncodeToString(hasher.Sum(nil))
+	tolerateModeFailure := tolerateRemoteModeFailure(targetFile)
+
 	// Ensure target directory exists on remote
 	targetDir := path.Dir(targetFile)
 	if err := d.EnsureRemoteDir(ctx, targetHost, targetDir); err != nil {
 		return fmt.Errorf("ensure remote dir: %w", err)
 	}
 
-	// Create temp file path for atomic copy
-	tmpFile := fmt.Sprintf("%s.tmp.%d", targetFile, time.Now().UnixNano())
-	cleanupTmp := func(reason string) {
-		cleanupRemotePath(ctx, targetHost, tmpFile, reason, false)
-	}
+	err = retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+		// A fresh, exclusively created staging directory per attempt, beside
+		// the target so the final mv stays on one filesystem.
+		stageID, stageIDErr := newRemoteStageID()
+		if stageIDErr != nil {
+			return fmt.Errorf("generate remote staging identifier: %w", stageIDErr)
+		}
+		stageDir := path.Join(targetDir, ".deploy-tmp-"+stageID)
+		stagedFile := path.Join(stageDir, "file")
 
-	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		// SCP to temp file
-		target := fmt.Sprintf("%s:%s", targetHost, tmpFile)
-		scpCmd := scpExecCommand(ctx, "-q", sourceFile, target)
-		var scpStderr bytes.Buffer
-		scpCmd.Stderr = &scpStderr
+		logger.Debug().
+			Str(log.FieldOperation, "prepare_staging").
+			Str(log.FieldTarget, targetHost).
+			Str(log.FieldPath, stageDir).
+			Msg("Preparing to create private staging directory on remote")
+		mkdirCmd := sshExecCommand(ctx, targetHost, buildRemoteFileStageCommand(stageDir))
+		var mkdirStderr boundedCommandBuffer
+		mkdirCmd.Stderr = &mkdirStderr
+		if err := mkdirCmd.Run(); err != nil {
+			// Nothing to clean up: this attempt did not create the entry, and
+			// an entry already at the name must never be removed. This is not
+			// a transfer leg, so only a transient SSH transport failure (exit
+			// 255 with a transport pattern) is retried.
+			return &sshCommandError{operation: "create remote staging dir", cause: err, stderr: joinNonEmpty(mkdirStderr.String())}
+		}
+		cleanupStage := func(reason string) {
+			cleanupRemotePath(ctx, targetHost, stageDir, reason, true)
+		}
 
-		if err := scpCmd.Run(); err != nil {
-			cleanupTmp("scp_failed")
+		// Seek on a regular file opened for reading has no realistic failure
+		// mode; the branch keeps a failure from streaming a partial file.
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			cleanupStage("source_rewind_failed")
+			return fmt.Errorf("rewind source file %s: %w", sourceFile, err)
+		}
+		streamCmd := newSSHTransferCommand(ctx, targetHost, buildRemoteFileStreamCommand(stageDir, stagedFile, targetFile, wantSHA, info.Mode(), tolerateModeFailure))
+		streamCmd.Stdin = source
+		var streamStderr boundedCommandBuffer
+		streamCmd.Stderr = &streamStderr
+
+		if err := streamCmd.Start(); err != nil {
+			cleanupStage("ssh_start_failed")
+			return fmt.Errorf("start ssh file stream: %w: %s", err, joinNonEmpty(streamStderr.String()))
+		}
+		if err := streamCmd.Wait(); err != nil {
+			cleanupStage("ssh_stream_failed")
 			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("scp timed out after %v", RemoteDeployTimeout)
+				return fmt.Errorf("ssh file stream timed out after %v", RemoteDeployTimeout)
 			}
-			return fmt.Errorf("scp failed: %w: %s", err, scpStderr.String())
+			return classifyRemoteExit("ssh file stream", targetHost, err, joinNonEmpty(streamStderr.String()))
 		}
-
-		// Atomic move temp file to target
-		moveCmd := sshExecCommand(ctx, targetHost, shellquote.Join("mv", tmpFile, targetFile))
-		var moveStderr bytes.Buffer
-		moveCmd.Stderr = &moveStderr
-
-		if err := moveCmd.Run(); err != nil {
-			cleanupTmp("move_failed")
-			return fmt.Errorf("atomic move failed: %w: %s", err, moveStderr.String())
+		if tolerateModeFailure && strings.Contains(streamStderr.String(), remoteModeUnsupportedMarker) {
+			logger.Warn().
+				Str(log.FieldTarget, targetHost).
+				Str("target_file", targetFile).
+				Msg("Remote filesystem cannot store permission bits, deployed file keeps the filesystem's default mode")
 		}
-
 		return nil
 	})
 	if err == nil {
