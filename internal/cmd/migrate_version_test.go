@@ -51,8 +51,11 @@ func TestMigrateVersionCmd_ExitStatus(t *testing.T) {
 		for name, content := range services {
 			require.NoError(t, os.WriteFile(filepath.Join(servicesDir, name), []byte(content), 0o644))
 		}
+		// --help=false: migrate_test.go runs "migrate version --help" earlier in
+		// the package, and cobra keeps the parsed help flag between Execute calls,
+		// so without it this command would print its help and return nil.
 		return servicesDir, []string{
-			"migrate", "version",
+			"migrate", "version", "--help=false",
 			"--services", servicesDir,
 			"--provisions", filepath.Join(dir, "provisions"),
 			"--stacks", filepath.Join(dir, "stacks"),
