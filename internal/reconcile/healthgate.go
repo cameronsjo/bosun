@@ -74,10 +74,6 @@ func CheckCriticalContainerHealth(
 
 		select {
 		case <-gateCtx.Done():
-			// gateCtx also ends when the caller cancels; that is not a timeout.
-			if err := ctx.Err(); err != nil {
-				return err
-			}
 			// Final check: a container may have become healthy since the last
 			// poll. gateCtx has expired, so the final inspection gets its own
 			// bound rather than failing every container as "missing".
@@ -89,9 +85,6 @@ func CheckCriticalContainerHealth(
 					Strs("containers", containers).
 					Msg("All critical containers healthy (final check)")
 				return nil
-			}
-			if err := ctx.Err(); err != nil {
-				return err
 			}
 			return formatHealthGateError(finalFailed)
 		case <-ticker.C:
