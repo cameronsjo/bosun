@@ -392,7 +392,7 @@ do not gain legacy aliases.
 | `BOSUN_GIT_USERNAME` | daemon, reconcile, validate | Username for private HTTPS Git Basic auth; must be set with `BOSUN_GIT_TOKEN` (no legacy alias) |
 | `BOSUN_GIT_TOKEN` | daemon, reconcile, validate | Token used as the private HTTPS Git Basic-auth password; must be set with `BOSUN_GIT_USERNAME` (no legacy alias) |
 | `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
-| `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
+| `BOSUN_POLL_INTERVAL` | daemon | Polling interval: bare seconds or a Go duration (default: `3600`). `0` disables polling; a negative or invalid value warns and keeps the default |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
 | `BOSUN_SOCKET_ALLOWED_UIDS` | daemon | Comma-separated numeric UIDs allowed to reach the Unix socket's peer-authorized routes (`POST /trigger`, `GET /config`) in addition to the daemon's own UID |
 | `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | daemon | Opt out of fail-closed Unix socket peer-credential authorization (default: `false`; strict `== "true"`). Required for `/trigger` and `/config` on platforms without peer credentials; logged loudly at startup and per request |

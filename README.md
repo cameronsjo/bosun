@@ -276,7 +276,7 @@ The daemon provides:
 | `BOSUN_GIT_USERNAME` | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` | Unset |
 | `BOSUN_GIT_TOKEN` | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` | Unset |
 | `BOSUN_GIT_FETCH_DEPTH` | Shallow clone/fetch history depth; increase when deploy diffs span multiple commits | `1` |
-| `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
+| `BOSUN_POLL_INTERVAL` | Poll interval in seconds or a Go duration; `0` disables polling | `3600` |
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
 | `BOSUN_SOCKET_ALLOWED_UIDS` | Additional numeric UIDs allowed to trigger, or to read `/config`, through the Unix socket (comma-separated) | Daemon UID only |
 | `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Disable Unix socket peer-credential authorization (`true` only; logs security warnings) | `false` |

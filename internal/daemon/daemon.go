@@ -1059,19 +1059,9 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 		Bool("force", force).
 		Msg("Dispatching reconciliation")
 
-	// Run the reconcile loop (may run multiple times if pending triggers arrive).
-	err := d.reconcileLoop(ctx, trigger, d.executeReconcileTrigger)
-
-	// Readiness reflects "has ever successfully reconciled" (#346), not just
-	// "the initial boot reconcile succeeded" -- flip it here, the single
-	// choke point every trigger path (startup, poll, webhook, socket, tcp,
-	// api, drift-self-heal) runs through, so a later successful reconcile
-	// can recover the daemon from a failed initial boot reconcile too.
-	if err == nil {
-		d.setReady(true)
-	}
-
-	return err
+	// Run the reconcile loop (may run multiple times if pending triggers
+	// arrive). reconcileLoop flips readiness after each successful cycle.
+	return d.reconcileLoop(ctx, trigger, d.executeReconcileTrigger)
 }
 
 // reconcileCycle executes one reconcile using the trigger metadata selected for
@@ -1091,6 +1081,15 @@ func (d *Daemon) reconcileLoop(ctx context.Context, trigger reconcileTrigger, ex
 		err := d.runReconcileCycleSafely(ctx, trigger, execute)
 		if err != nil {
 			lastErr = err
+		} else {
+			// Readiness reflects "has ever successfully reconciled" (#346), not
+			// "the initial boot reconcile succeeded" and not the loop's
+			// aggregate error. Flip it per cycle here, the single choke point
+			// every trigger path (startup, poll, webhook, socket, tcp, api,
+			// drift-self-heal) runs through: a coalesced cycle that succeeds
+			// after an earlier failed one recovers the daemon (#797), and so
+			// does a later trigger after a failed initial boot reconcile.
+			d.setReady(true)
 		}
 
 		// Check and drain pending triggers while holding the same mutex that
@@ -1650,6 +1649,13 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		d.metrics.RecordDriftCheck(report.HasDrift())
 	}
 
+	// A resolution alert can only be sent when an alerter exists and the
+	// operator has not turned resolution alerts off. When it cannot, resolved
+	// keys are still retired from the alerted state (openspec alerting spec,
+	// "Resolution alerts disabled"): a stale key would otherwise suppress the
+	// next real alert for that service inside the cooldown and skip debounce.
+	sendResolved := d.alerter != nil && d.config.DriftResolveAlerts
+
 	if report.HasDrift() {
 		logDriftDetected(logger, report)
 
@@ -1718,7 +1724,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 
 			// Resolution alerts: only fire for items that were previously alerted.
 			// Skip items still in debounce (never alerted).
-			if len(resolvedKeys) > 0 && d.config.DriftResolveAlerts {
+			if len(resolvedKeys) > 0 && sendResolved {
 				var actuallyResolved []string
 				for _, key := range resolvedKeys {
 					if _, inDebounce := state.DriftDebounceItems[key]; inDebounce {
@@ -1747,6 +1753,10 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 				}
 			}
 		}
+
+		if !sendResolved {
+			retireResolvedDriftKeys(logger, state, unfilteredCriticalItems, d.alerter == nil)
+		}
 	} else {
 		// No drift — clean up debounce items and check if we need to send resolution alerts.
 		if len(state.DriftDebounceItems) > 0 {
@@ -1766,7 +1776,14 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 			logger.Debug().Msg("Drift check: no drift detected")
 		}
 
-		if len(state.DriftAlertedItems) > 0 && d.alerter != nil && d.config.DriftResolveAlerts {
+		if len(state.DriftAlertedItems) > 0 && !sendResolved {
+			// Nothing can announce the resolution, so retire every alerted key now.
+			logger.Debug().
+				Int("items", len(state.DriftAlertedItems)).
+				Bool("no_alerter", d.alerter == nil).
+				Msg("Drift resolved: retiring alerted items without a resolution alert")
+			state.DriftAlertedItems = nil
+		} else if len(state.DriftAlertedItems) > 0 {
 			var resolvedKeys []string
 			for key := range state.DriftAlertedItems {
 				resolvedKeys = append(resolvedKeys, key)
@@ -1842,6 +1859,25 @@ func driftStatusLabel(report *reconcile.DriftReport) string {
 		return "drifted"
 	}
 	return "clean"
+}
+
+// retireResolvedDriftKeys drops alerted (and debounce) keys whose service has no
+// drift left in activeItems, without sending anything. It runs when no
+// resolution alert can be sent, so a resolved key cannot linger in the state
+// file and suppress the next real alert inside the cooldown.
+func retireResolvedDriftKeys(logger zerolog.Logger, state *reconcile.DeployState, activeItems []reconcile.DriftItem, noAlerter bool) {
+	resolved := reconcile.ResolvedDriftAlertKeys(activeItems, state.DriftAlertedItems)
+	if len(resolved) == 0 {
+		return
+	}
+	for _, key := range resolved {
+		delete(state.DriftAlertedItems, key)
+		delete(state.DriftDebounceItems, key)
+	}
+	logger.Debug().
+		Strs("items", resolved).
+		Bool("no_alerter", noAlerter).
+		Msg("Retired resolved drift alert state without a resolution alert")
 }
 
 // logDriftDetected logs a detected drift once, for both the acting tick and the
@@ -2526,8 +2562,15 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
-	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
-		cfg.PollInterval = d
+	// Poll interval (0 disables polling). Read the variable's presence, not just
+	// a positive value: an explicit 0 must reach PollInterval like the
+	// BOSUN_DRIFT_INTERVAL=0 case does.
+	if v := config.BosunEnv("POLL_INTERVAL"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok && d >= 0 {
+			cfg.PollInterval = d
+		} else {
+			log.Warn().Str("env", "POLL_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid or negative duration")
+		}
 	}
 
 	// Reconcile config from environment

@@ -373,22 +373,32 @@ func ShouldAlertDrift(activeItems, alertCandidates []DriftItem, alertedItems map
 		}
 	}
 
+	return alertItems, ResolvedDriftAlertKeys(activeItems, alertedItems)
+}
+
+// ResolvedDriftAlertKeys returns, sorted, the alerted keys whose service has no
+// drift left in activeItems. It is the one definition of "resolved", shared by
+// ShouldAlertDrift and by callers that retire keys without sending a
+// resolution alert (resolution alerts disabled, or no alerter configured).
+//
+// A type transition is not a resolution while the service still has critical
+// drift. The old per-type key is retired only after the replacement alert is
+// delivered successfully.
+func ResolvedDriftAlertKeys(activeItems []DriftItem, alertedItems map[string]time.Time) []string {
 	activeServices := make(map[string]bool, len(activeItems))
 	for _, item := range activeItems {
 		activeServices[item.Service] = true
 	}
 
-	// A type transition is not a resolution while the service still has
-	// critical drift. The old per-type key is retired only after the replacement
-	// alert is delivered successfully.
+	var resolvedKeys []string
 	for key := range alertedItems {
 		service, _, _ := strings.Cut(key, ":")
 		if !activeServices[service] {
 			resolvedKeys = append(resolvedKeys, key)
 		}
 	}
-
-	return alertItems, resolvedKeys
+	sort.Strings(resolvedKeys)
+	return resolvedKeys
 }
 
 // SuppressedDriftAlertKeys returns previously-alerted keys whose service still
