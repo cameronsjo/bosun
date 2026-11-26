@@ -823,7 +823,8 @@ func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel stri
 	if ownedRoot {
 		defer func() { _ = root.Close() }()
 	}
-	var files, physicalFiles, dirs []string
+	var files, dirs []string
+	managedDirs := make(map[string]struct{})
 	err := fs.WalkDir(fileutil.PinnedRootFS(root), ".", func(relativePath string, _ fs.DirEntry, walkErr error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -852,7 +853,14 @@ func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel stri
 			return fmt.Errorf("destination entry %s is not in the managed-file manifest", relSlash)
 		}
 		files = append(files, relSlash)
-		physicalFiles = append(physicalFiles, relativePath)
+		// Record every ancestor directory of this managed file. An ancestor
+		// already recorded has its own ancestors recorded, so stop there.
+		for ancestor := filepath.Dir(relativePath); ancestor != "."; ancestor = filepath.Dir(ancestor) {
+			if _, seen := managedDirs[ancestor]; seen {
+				break
+			}
+			managedDirs[ancestor] = struct{}{}
+		}
 		return nil
 	})
 	if err != nil {
@@ -862,15 +870,7 @@ func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel stri
 		return nil, fmt.Errorf("destination directory %s has no managed descendants", conflictDir)
 	}
 	for _, dir := range dirs {
-		hasManaged := false
-		for _, file := range physicalFiles {
-			under, relErr := filepath.Rel(dir, file)
-			if relErr == nil && under != "." && under != ".." && !filepath.IsAbs(under) && (len(under) < 3 || under[:3] != ".."+string(filepath.Separator)) {
-				hasManaged = true
-				break
-			}
-		}
-		if !hasManaged {
+		if _, hasManaged := managedDirs[dir]; !hasManaged {
 			return nil, fmt.Errorf("destination directory %s has no managed descendants", dir)
 		}
 	}

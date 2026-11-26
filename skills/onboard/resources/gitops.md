@@ -222,8 +222,8 @@ reconcile (GH#319, bosun-5qx):
   `BOSUN_BACKUP_TIMEOUT` — accepts a Go duration or plain seconds) applies
   independently to pre-deploy creation + verification and post-success
   retention verification + cleanup. The pre-deploy deadline cancels native
-  local archive I/O, remote SSH `tar`, the fast `tar -tzf` verification
-  pre-check, and the native full-stream integrity read. A retention timeout
+  local archive I/O, remote SSH `tar`, and the native single-pass archive
+  verification read. A retention timeout
   warns, marks its telemetry span as an error, preserves the remaining backups,
   and does not revoke the verified deploy's success.
 

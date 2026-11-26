@@ -2733,10 +2733,8 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 				return nil, err
 			}
 		} else {
-			targetDir := path.Dir(dst)
-			if err := r.deploy.EnsureRemoteDir(ctx, host, targetDir); err != nil {
-				return nil, fmt.Errorf("ensure remote deploy directory %q: %w", targetDir, err)
-			}
+			// DeployRemoteFile ensures the parent directory itself and names it in
+			// the error, so no separate ssh round-trip is needed here.
 			if err := r.deploy.DeployRemoteFile(ctx, src, host, dst); err != nil {
 				return nil, err
 			}
