@@ -463,6 +463,12 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 
 	sshCmd := d.remoteComposeUpCmd(composeDir)
 
+	// Bound this call, retries and failure classification included, by the
+	// compose up timeout, as local ComposeUpMultiple does. An earlier caller
+	// deadline still wins (#727, #802).
+	ctx, cancel := context.WithTimeout(ctx, d.composeUpTimeout())
+	defer cancel()
+
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := sshExecCommand(ctx, host, sshCmd)
 		var stderr bytes.Buffer
@@ -516,6 +522,14 @@ func (d *DeployOps) classifyComposeFailureRemote(ctx context.Context, host, comp
 	}
 	args = append(args, "ps", "--all", "--format", "json")
 	sshCmd := fmt.Sprintf("cd %s && %s", shellquote.Join(composeDir), shellquote.Join(args...))
+
+	// Use the compose up timeout for the ps query when the caller set no
+	// deadline, matching the local classifyComposeFailure.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.composeUpTimeout())
+		defer cancel()
+	}
 
 	cmd := sshExecCommand(ctx, host, sshCmd)
 	var stdout, stderr bytes.Buffer

@@ -17,7 +17,9 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	xssh "golang.org/x/crypto/ssh"
@@ -970,10 +972,27 @@ func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]
 			}
 			return nil, fmt.Errorf("get tree for %s: %w", fromCommit[:MinLen(fromCommit, 8)], err)
 		}
+		// go-git's DiffTree never reports a missing subtree: its non-recursive
+		// TreeWalker turns the GetTree error into io.EOF, which truncates the
+		// directory listing and returns a diff that silently misses changes.
+		// Prove the from-tree is complete first (#802). The to-tree was just
+		// checked out by Pull's hard reset, which fails on a missing tree.
+		if err := ensureTreeComplete(repo.Storer, fromTree); err != nil {
+			if errors.Is(err, plumbing.ErrObjectNotFound) {
+				return nil, fmt.Errorf("%w: from-commit %s tree is incomplete: %v",
+					ErrCommitUnavailable, fromCommit[:MinLen(fromCommit, 8)], err)
+			}
+			return nil, fmt.Errorf("inspect tree for %s: %w", fromCommit[:MinLen(fromCommit, 8)], err)
+		}
 	}
 
 	changes, err := object.DiffTree(fromTree, toTree)
 	if err != nil {
+		// Backstop: a missing object that does surface from DiffTree is the
+		// same insufficient-history case as above.
+		if errors.Is(err, plumbing.ErrObjectNotFound) || errors.Is(err, object.ErrDirectoryNotFound) {
+			return nil, fmt.Errorf("%w: diff trees: %v", ErrCommitUnavailable, err)
+		}
 		return nil, fmt.Errorf("diff trees: %w", err)
 	}
 
@@ -992,4 +1011,28 @@ func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]
 		Msg("Successfully diffed commits")
 
 	return files, nil
+}
+
+// ensureTreeComplete loads every subtree object reachable from tree and
+// returns the first load error. A missing object returns an error wrapping
+// plumbing.ErrObjectNotFound. Each distinct subtree is loaded once.
+func ensureTreeComplete(s storer.EncodedObjectStorer, tree *object.Tree) error {
+	seen := make(map[plumbing.Hash]bool)
+	pending := []*object.Tree{tree}
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, entry := range current.Entries {
+			if entry.Mode != filemode.Dir || seen[entry.Hash] {
+				continue
+			}
+			seen[entry.Hash] = true
+			subtree, err := object.GetTree(s, entry.Hash)
+			if err != nil {
+				return fmt.Errorf("load subtree %s (%s): %w", entry.Name, entry.Hash, err)
+			}
+			pending = append(pending, subtree)
+		}
+	}
+	return nil
 }

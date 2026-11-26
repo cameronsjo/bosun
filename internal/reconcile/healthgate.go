@@ -51,52 +51,66 @@ func CheckCriticalContainerHealth(
 		Dur("interval", interval).
 		Msg("Starting critical container health gate")
 
-	deadline := time.After(timeout)
+	// gateCtx bounds the polls, Inspect calls included, so a hung Docker API
+	// call cannot outlive the gate timeout. It also ends on caller cancel.
+	gateCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		results := inspectCriticalContainers(ctx, client, containers)
-
-		var failed []ContainerHealthResult
-		for _, r := range results {
-			if r.Status != "healthy" && r.Status != "no_healthcheck" {
-				failed = append(failed, r)
-			}
-		}
-
+		failed := failedHealthResults(inspectCriticalContainers(gateCtx, client, containers))
 		if len(failed) == 0 {
 			logger.Info().
 				Strs("containers", containers).
 				Msg("All critical containers healthy")
 			return nil
 		}
+		// An inspection that failed because the caller canceled is not a
+		// container failure: report the cancellation, not "missing".
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
 		select {
-		case <-deadline:
-			// Final check: a container may have become healthy since the last poll.
-			finalResults := inspectCriticalContainers(ctx, client, containers)
-			var finalFailed []ContainerHealthResult
-			for _, r := range finalResults {
-				if r.Status != "healthy" && r.Status != "no_healthcheck" {
-					finalFailed = append(finalFailed, r)
-				}
+		case <-gateCtx.Done():
+			// gateCtx also ends when the caller cancels; that is not a timeout.
+			if err := ctx.Err(); err != nil {
+				return err
 			}
+			// Final check: a container may have become healthy since the last
+			// poll. gateCtx has expired, so the final inspection gets its own
+			// bound rather than failing every container as "missing".
+			finalCtx, finalCancel := context.WithTimeout(ctx, interval)
+			finalFailed := failedHealthResults(inspectCriticalContainers(finalCtx, client, containers))
+			finalCancel()
 			if len(finalFailed) == 0 {
 				logger.Info().
 					Strs("containers", containers).
 					Msg("All critical containers healthy (final check)")
 				return nil
 			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return formatHealthGateError(finalFailed)
-		case <-ctx.Done():
-			return ctx.Err()
 		case <-ticker.C:
 			logger.Debug().
 				Int("pending", len(failed)).
 				Msg("Health gate polling. Some containers not yet healthy")
 		}
 	}
+}
+
+// failedHealthResults returns the results that do not pass the gate.
+func failedHealthResults(results []ContainerHealthResult) []ContainerHealthResult {
+	var failed []ContainerHealthResult
+	for _, r := range results {
+		if r.Status != "healthy" && r.Status != "no_healthcheck" {
+			failed = append(failed, r)
+		}
+	}
+	return failed
 }
 
 // inspectCriticalContainers checks each container's health via Docker API.
