@@ -10,13 +10,14 @@ Named targets share one `BackupDir`, although state file, staging directory, and
 - Anchor recovery, retention, and corrupt-backup removal act on the target's own directory only.
 - Archive self-exclusion covers the shared backup root, not only the target's own directory, so a full-appdata fallback never archives a sibling's backups.
 - Backups that earlier releases wrote directly under the shared root are neither used nor pruned by a named target. A warning is logged; the operator removes them.
+- Scans of a backup directory treat only the exact name `backup-YYYYMMDD-HHMMSS` as a backup, so a target directory such as `backup-pi` is never pruned as a corrupt backup. A target named exactly that shape is rejected.
 - No per-target override, migration, or new environment variable.
 
 ## Impact
 
 - Affected specs: `reconcile` (ADDED only).
 - Affected code: `internal/reconcile/target.go`, `reconcile.go`, `backup.go`; docs and `skills/onboard/resources/*`.
-- Upgrade: pre-existing `<BackupDir>/backup-*` directories of a multi-target deployment are orphaned until removed. Per current code (`applyBackupFailurePolicy`), the first failed backup of a named target aborts its deploy, because no verified anchor exists in its new directory.
+- Upgrade: pre-existing `<BackupDir>/backup-YYYYMMDD-HHMMSS` directories of a multi-target deployment are orphaned until removed. A target already named exactly like one (very unlikely) fails target resolution and must be renamed. Per current code (`applyBackupFailurePolicy`), the first failed backup of a named target aborts its deploy, because no verified anchor exists in its new directory.
 
 ## Relationship to other changes
 
