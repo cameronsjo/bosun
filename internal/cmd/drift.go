@@ -207,6 +207,9 @@ func runMultiTargetDrift(targets []reconcile.Target) error {
 	stateDir := filepath.Dir(driftStateFile)
 	var unavailable []string
 
+	live := newLiveDriftSession()
+	defer live.close()
+
 	for i, t := range targets {
 		if i > 0 {
 			fmt.Println()
@@ -228,8 +231,8 @@ func runMultiTargetDrift(targets []reconcile.Target) error {
 				unavailable = append(unavailable, t.Name)
 				continue
 			}
-			projectName := t.ProjectName
-			runLiveDriftCheckForTarget(state, sf, projectName)
+			state = live.mustCollect(state, sf, t.ProjectName)
+			printDriftHuman(state)
 		} else {
 			printDriftHuman(state)
 		}
@@ -258,13 +261,15 @@ func runMultiTargetDriftJSON(targets []reconcile.Target) error {
 	out := multiTargetDriftJSON{Targets: make([]targetDriftJSON, 0, len(targets))}
 	var unavailable []string
 
+	live := newLiveDriftSession()
+	defer live.close()
+
 	for _, t := range targets {
 		sf := reconcile.TargetStateFile(stateDir, t)
 		state := reconcile.LoadState(sf)
 
 		if driftLive && state.LastDeployedCommit != "" && len(state.DeclaredServices) > 0 {
-			projectName := t.ProjectName
-			state = runLiveDriftCollect(state, sf, projectName)
+			state = live.mustCollect(state, sf, t.ProjectName)
 		}
 
 		entry := targetDriftJSON{Target: t.Name}
@@ -292,45 +297,82 @@ func runMultiTargetDriftJSON(targets []reconcile.Target) error {
 }
 
 func runLiveDriftCheck(state *reconcile.DeployState) error {
-	state = runLiveDriftCollect(state, driftStateFile, driftProjectName)
+	live := newLiveDriftSession()
+	defer live.close()
+
+	state = live.mustCollect(state, driftStateFile, driftProjectName)
 	return printDriftStatus(state)
 }
 
-// runLiveDriftCheckForTarget performs a live check and prints human output for a specific target.
-func runLiveDriftCheckForTarget(state *reconcile.DeployState, stateFile, projectName string) {
-	if len(state.DeclaredServices) == 0 {
-		ui.Warning("No declared services in state file. Deploy first to populate declared state.")
-		return
-	}
+// liveDriftSession holds what every target of one `bosun drift --live` run can
+// share: one Docker connection and one read of the drift ignore rules, instead
+// of a connection (with its ping) and a config load per target. Both are made
+// on first use, so a run with no live-eligible target never touches Docker.
+type liveDriftSession struct {
+	newClient func() (*docker.Client, error)
+	loadRules func() []reconcile.DriftIgnoreRule
 
-	state = runLiveDriftCollect(state, stateFile, projectName)
-	printDriftHuman(state)
+	client      *docker.Client
+	rules       []reconcile.DriftIgnoreRule
+	rulesLoaded bool
 }
 
-// runLiveDriftCollect performs the live Docker check and updates the state file.
-// Returns the updated state (for JSON consumers that need the result).
-func runLiveDriftCollect(state *reconcile.DeployState, stateFile, projectName string) *reconcile.DeployState {
-	client, err := docker.NewClient()
-	if err != nil {
-		ui.Fatal("Failed to connect to Docker: %v", err)
+func newLiveDriftSession() *liveDriftSession {
+	return &liveDriftSession{newClient: docker.NewClient, loadRules: loadDriftIgnoreRules}
+}
+
+// dockerClient returns the session's client, connecting on the first call.
+func (s *liveDriftSession) dockerClient() (*docker.Client, error) {
+	if s.client != nil {
+		return s.client, nil
 	}
-	defer func() { _ = client.Close() }()
+	client, err := s.newClient()
+	if err != nil {
+		return nil, fmt.Errorf("connect to Docker: %w", err)
+	}
+	s.client = client
+	return s.client, nil
+}
+
+// ignoreRules returns the drift ignore rules, loading them on the first call.
+func (s *liveDriftSession) ignoreRules() []reconcile.DriftIgnoreRule {
+	if !s.rulesLoaded {
+		s.rules = s.loadRules()
+		s.rulesLoaded = true
+	}
+	return s.rules
+}
+
+// close releases the Docker client if the session opened one.
+func (s *liveDriftSession) close() {
+	if s.client != nil {
+		_ = s.client.Close()
+		s.client = nil
+	}
+}
+
+// collect performs the live Docker check for one target and updates its state
+// file. It returns the updated state (for JSON consumers that need the result).
+func (s *liveDriftSession) collect(state *reconcile.DeployState, stateFile, projectName string) (*reconcile.DeployState, error) {
+	client, err := s.dockerClient()
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	actual, err := reconcile.CollectActualState(ctx, client, projectName)
 	if err != nil {
-		ui.Fatal("Failed to collect actual state: %v", err)
+		return nil, fmt.Errorf("collect actual state: %w", err)
 	}
 
 	report := reconcile.CompareDrift(state.DeclaredServices, actual)
 
 	// Apply drift ignore rules from project config.
-	ignoreRules := loadDriftIgnoreRules()
-	if len(ignoreRules) > 0 {
+	if rules := s.ignoreRules(); len(rules) > 0 {
 		preFilterCount := len(report.Items)
-		report.Items = reconcile.FilterIgnoredDriftItems(report.Items, ignoreRules)
+		report.Items = reconcile.FilterIgnoredDriftItems(report.Items, rules)
 		report.IgnoredCount = preFilterCount - len(report.Items)
 	}
 
@@ -341,7 +383,18 @@ func runLiveDriftCollect(state *reconcile.DeployState, stateFile, projectName st
 		ui.Warning("Failed to save drift results: %v", err)
 	}
 
-	return state
+	return state, nil
+}
+
+// mustCollect is collect for the command paths, which end the process on a
+// Docker failure.
+func (s *liveDriftSession) mustCollect(state *reconcile.DeployState, stateFile, projectName string) *reconcile.DeployState {
+	updated, err := s.collect(state, stateFile, projectName)
+	if err != nil {
+		ui.Fatal("Failed to %v", err)
+		return state
+	}
+	return updated
 }
 
 func printDriftStatus(state *reconcile.DeployState) error {

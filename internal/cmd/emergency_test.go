@@ -5,14 +5,119 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 )
+
+// errorLines returns n newline-separated log lines that all match the error regex.
+func errorLines(n int) string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("error number %d", i)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func TestCollectRecentErrors(t *testing.T) {
+	containers := []docker.ContainerInfo{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+
+	tests := []struct {
+		name          string
+		logs          map[string]string // a container missing from the map fails its log read
+		limit         int
+		wantErrors    int
+		wantLogCalls  int
+		wantFirstFrom string
+	}{
+		{
+			name:          "limit reached inside the first container stops the scan",
+			logs:          map[string]string{"a": errorLines(60), "b": errorLines(5), "c": errorLines(5)},
+			limit:         MaxErrorDisplay,
+			wantErrors:    MaxErrorDisplay,
+			wantLogCalls:  1,
+			wantFirstFrom: "a",
+		},
+		{
+			name:          "limit reached on the last line of a container stops the scan",
+			logs:          map[string]string{"a": errorLines(MaxErrorDisplay), "b": errorLines(5), "c": errorLines(5)},
+			limit:         MaxErrorDisplay,
+			wantErrors:    MaxErrorDisplay,
+			wantLogCalls:  1,
+			wantFirstFrom: "a",
+		},
+		{
+			name:          "limit reached inside the second container",
+			logs:          map[string]string{"a": errorLines(30), "b": errorLines(30), "c": errorLines(30)},
+			limit:         MaxErrorDisplay,
+			wantErrors:    MaxErrorDisplay,
+			wantLogCalls:  2,
+			wantFirstFrom: "a",
+		},
+		{
+			name:          "under the limit reads every container",
+			logs:          map[string]string{"a": errorLines(3), "b": errorLines(4), "c": errorLines(5)},
+			limit:         MaxErrorDisplay,
+			wantErrors:    12,
+			wantLogCalls:  3,
+			wantFirstFrom: "a",
+		},
+		{
+			name:          "lines without an error marker are ignored",
+			logs:          map[string]string{"a": "all fine\nstarted ok", "b": "FATAL: disk full", "c": ""},
+			limit:         MaxErrorDisplay,
+			wantErrors:    1,
+			wantLogCalls:  3,
+			wantFirstFrom: "b",
+		},
+		{
+			name:          "a container whose logs cannot be read is skipped",
+			logs:          map[string]string{"b": errorLines(2), "c": errorLines(1)},
+			limit:         MaxErrorDisplay,
+			wantErrors:    3,
+			wantLogCalls:  3,
+			wantFirstFrom: "b",
+		},
+		{
+			name:         "nothing found",
+			logs:         map[string]string{},
+			limit:        MaxErrorDisplay,
+			wantErrors:   0,
+			wantLogCalls: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := dockertest.NewMockDockerAPI()
+			mock.ContainerLogsFunc = func(_ context.Context, name string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+				logs, ok := tt.logs[name]
+				if !ok {
+					return nil, errors.New("mock: container logs failed")
+				}
+				return io.NopCloser(strings.NewReader(logs)), nil
+			}
+
+			found := collectRecentErrors(context.Background(), docker.NewClientWithAPI(mock), containers, tt.limit)
+
+			assert.Len(t, found, tt.wantErrors)
+			assert.Equal(t, tt.wantLogCalls, mock.ContainerLogsCalls, "log fetches")
+			if tt.wantErrors > 0 {
+				assert.Equal(t, tt.wantFirstFrom, found[0].Container)
+			}
+		})
+	}
+}
 
 func TestDeployRestoredConfigsHonorsContext(t *testing.T) {
 	root := t.TempDir()

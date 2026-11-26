@@ -217,16 +217,14 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Checking if container exists")
 
-	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{All: true})
-	if err != nil {
-		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for existence check")
-		return false, fmt.Errorf("list containers: %w", err)
-	}
-
-	containers := listResult.Items
-
 	// Normalize input name (remove leading slash if present)
 	normalizedName := strings.TrimPrefix(name, "/")
+
+	containers, err := c.listByName(ctx, normalizedName)
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for existence check")
+		return false, err
+	}
 
 	for _, ctr := range containers {
 		for _, n := range ctr.Names {

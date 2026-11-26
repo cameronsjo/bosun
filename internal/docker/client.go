@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/client"
 
@@ -164,29 +166,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 	containers := listResult.Items
 	result := make([]ContainerInfo, 0, len(containers))
 	for _, ctr := range containers {
-		name := ""
-		if len(ctr.Names) > 0 {
-			name = strings.TrimPrefix(ctr.Names[0], "/")
-		}
-
-		health := parseHealthFromStatus(ctr.Status)
-
-		ports := make([]string, 0, len(ctr.Ports))
-		for _, p := range ctr.Ports {
-			ports = append(ports, formatPortString(p.PublicPort, p.PrivatePort, p.Type))
-		}
-
-		result = append(result, ContainerInfo{
-			ID:      ctr.ID[:12],
-			Name:    name,
-			Image:   ctr.Image,
-			Status:  ctr.Status,
-			State:   string(ctr.State),
-			Health:  health,
-			Created: time.Unix(ctr.Created, 0),
-			Ports:   ports,
-			Labels:  ctr.Labels,
-		})
+		result = append(result, containerInfoFromSummary(ctr))
 	}
 
 	logger.Debug().
@@ -194,6 +174,67 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Listed containers successfully")
 	return result, nil
+}
+
+// containerInfoFromSummary converts one Docker list entry into a ContainerInfo.
+// ListContainers and the by-name lookups share it, so a lookup returns the same
+// fields (ports included) as the list.
+func containerInfoFromSummary(ctr container.Summary) ContainerInfo {
+	name := ""
+	if len(ctr.Names) > 0 {
+		name = strings.TrimPrefix(ctr.Names[0], "/")
+	}
+
+	ports := make([]string, 0, len(ctr.Ports))
+	for _, p := range ctr.Ports {
+		ports = append(ports, formatPortString(p.PublicPort, p.PrivatePort, p.Type))
+	}
+
+	return ContainerInfo{
+		ID:      ctr.ID[:min(shortIDLen, len(ctr.ID))],
+		Name:    name,
+		Image:   ctr.Image,
+		Status:  ctr.Status,
+		State:   string(ctr.State),
+		Health:  parseHealthFromStatus(ctr.Status),
+		Created: time.Unix(ctr.Created, 0),
+		Ports:   ports,
+		Labels:  ctr.Labels,
+	}
+}
+
+const (
+	// shortIDLen is the length of the abbreviated container ID bosun displays.
+	shortIDLen = 12
+	// maxConcurrentStats bounds the Docker stats requests GetAllContainerStats
+	// keeps in flight. Each request blocks about a second in the daemon.
+	maxConcurrentStats = 8
+)
+
+// exactNameFilter returns a list filter that matches the one container whose
+// name is exactly name. Docker's name filter is an unanchored regular
+// expression over "/name", so a bare name also matches every container whose
+// name merely contains it, and a name holding regex syntax (a dot, a
+// parenthesis) would be read as a pattern. Callers still compare the returned
+// names: the link names Docker also matches are not exact matches.
+func exactNameFilter(name string) client.Filters {
+	return make(client.Filters).Add("name", "^/"+regexp.QuoteMeta(name)+"$")
+}
+
+// listByName returns the list entries, running or stopped, that Docker matches
+// to normalizedName (the container name without its leading slash). Docker may
+// also return link-name matches, so each caller applies its own exact-name
+// rule to the result. GetContainerByName and Exists both go through here, so
+// the filter and the list options live in one place.
+func (c *Client) listByName(ctx context.Context, normalizedName string) ([]container.Summary, error) {
+	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: exactNameFilter(normalizedName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+	return listResult.Items, nil
 }
 
 // CountContainers returns counts of running, total, and unhealthy containers.
@@ -232,16 +273,18 @@ func (c *Client) GetContainerByName(ctx context.Context, name string) (*Containe
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Looking up container by name")
 
-	containers, err := c.ListContainers(ctx, false)
+	normalizedName := strings.TrimPrefix(name, "/")
+	items, err := c.listByName(ctx, normalizedName)
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for lookup")
 		return nil, err
 	}
 
-	for _, ctr := range containers {
-		if ctr.Name == name {
+	for _, ctr := range items {
+		info := containerInfoFromSummary(ctr)
+		if info.Name == normalizedName {
 			logger.Debug().Str(log.FieldContainer, name).Msg("Found container")
-			return &ctr, nil
+			return &info, nil
 		}
 	}
 
@@ -454,24 +497,50 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 
 // GetAllContainerStats returns stats for all running containers.
 // Containers that fail to return stats are logged and skipped.
+// Fetches run concurrently with a bounded worker semaphore so N containers
+// do not incur N sequential ~1s Docker stats round-trips.
 func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, error) {
 	containers, err := c.ListContainers(ctx, true)
 	if err != nil {
 		return nil, err
 	}
+	if len(containers) == 0 {
+		return []ContainerStats{}, nil
+	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	sem := make(chan struct{}, maxConcurrentStats)
+	results := make([]*ContainerStats, len(containers))
+
+	var wg sync.WaitGroup
+	for i, ctr := range containers {
+		wg.Add(1)
+		go func(idx int, name string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			s, statsErr := c.GetContainerStats(ctx, name)
+			if statsErr != nil {
+				logger.Debug().
+					Str(log.FieldContainer, name).
+					Err(statsErr).
+					Msg("Skipping container stats due to error")
+				return
+			}
+			results[idx] = s
+		}(i, ctr.Name)
+	}
+	wg.Wait()
+
 	stats := make([]ContainerStats, 0, len(containers))
-	for _, ctr := range containers {
-		s, err := c.GetContainerStats(ctx, ctr.Name)
-		if err != nil {
-			logger.Debug().
-				Str(log.FieldContainer, ctr.Name).
-				Err(err).
-				Msg("Skipping container stats due to error")
-			continue
+	for _, s := range results {
+		if s != nil {
+			stats = append(stats, *s)
 		}
-		stats = append(stats, *s)
 	}
 
 	return stats, nil

@@ -105,29 +105,12 @@ func showRecentErrors() {
 			return fmt.Errorf("list containers: %w", err)
 		}
 
-		errorCount := 0
-
-		for _, ctr := range containers {
-			logs, err := client.GetContainerLogs(ctx, ctr.Name, ContainerLogTailLines)
-			if err != nil {
-				continue
-			}
-
-			lines := strings.Split(logs, "\n")
-			for _, line := range lines {
-				if errorCount >= MaxErrorDisplay {
-					break
-				}
-				// Clean up Docker log prefix (first 8 bytes are header)
-				cleanLine := stripDockerLogPrefix(line)
-				if errorLogRegex.MatchString(cleanLine) {
-					_, _ = ui.Red.Printf("[%s] %s\n", ctr.Name, cleanLine)
-					errorCount++
-				}
-			}
+		found := collectRecentErrors(ctx, client, containers, MaxErrorDisplay)
+		for _, e := range found {
+			_, _ = ui.Red.Printf("[%s] %s\n", e.Container, e.Line)
 		}
 
-		if errorCount == 0 {
+		if len(found) == 0 {
 			_, _ = ui.Green.Println("No recent errors found")
 		}
 		return nil
@@ -136,6 +119,41 @@ func showRecentErrors() {
 	if err != nil {
 		ui.Error("Docker not available: %v", err)
 	}
+}
+
+// recentError is one error line found in a container's recent logs.
+type recentError struct {
+	Container string
+	Line      string
+}
+
+// collectRecentErrors scans each container's recent logs for error lines and
+// stops, without fetching further logs, once limit lines are found. A container
+// whose logs cannot be read is skipped.
+func collectRecentErrors(ctx context.Context, client *docker.Client, containers []docker.ContainerInfo, limit int) []recentError {
+	var found []recentError
+	for _, ctr := range containers {
+		if len(found) >= limit {
+			break
+		}
+
+		logs, err := client.GetContainerLogs(ctx, ctr.Name, ContainerLogTailLines)
+		if err != nil {
+			continue
+		}
+
+		for _, line := range strings.Split(logs, "\n") {
+			if len(found) >= limit {
+				break
+			}
+			// Clean up Docker log prefix (first 8 bytes are header)
+			cleanLine := stripDockerLogPrefix(line)
+			if errorLogRegex.MatchString(cleanLine) {
+				found = append(found, recentError{Container: ctr.Name, Line: cleanLine})
+			}
+		}
+	}
+	return found
 }
 
 func showSnapshots(cfg *config.Config) {

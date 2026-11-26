@@ -6,11 +6,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 )
 
 func TestMetricsRegistration(t *testing.T) {
@@ -156,6 +160,37 @@ func TestMetricsEndpointServesPrometheus(t *testing.T) {
 	body := w.Body.String()
 	assert.Contains(t, body, "bosun_ready")
 	assert.Contains(t, body, "bosun_uptime_seconds")
+}
+
+// TestMetricsMiddleware_NoDockerIO pins #803: a scrape refreshes its three
+// point-in-time gauges from daemon memory and never reaches Docker. The daemon
+// state is set directly (not through setReady) so only the middleware can have
+// written the gauges the test reads.
+func TestMetricsMiddleware_NoDockerIO(t *testing.T) {
+	d, s := newTestDaemon(t)
+	mock := dockertest.NewMockDockerAPI()
+	d.dockerClientOverride = docker.NewClientWithAPI(mock)
+
+	d.readyMu.Lock()
+	d.ready = true
+	d.readyMu.Unlock()
+	reconciledAt := time.Unix(1710000000, 0)
+	d.stateMu.Lock()
+	d.lastReconcile = reconciledAt
+	d.stateMu.Unlock()
+
+	handler := s.metricsMiddleware(s.promHandler())
+	for range 3 {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	assert.Zero(t, mock.PingCalls, "a scrape must not ping Docker")
+	assert.Zero(t, mock.ContainerListCalls, "a scrape must not list containers")
+	assert.Equal(t, 1.0, testutil.ToFloat64(s.metrics.Ready))
+	assert.Equal(t, float64(reconciledAt.Unix()), testutil.ToFloat64(s.metrics.LastReconcileTime))
+	assert.Positive(t, testutil.ToFloat64(s.metrics.UptimeSeconds))
 }
 
 func TestMetricsEndpointRejectsPost(t *testing.T) {
