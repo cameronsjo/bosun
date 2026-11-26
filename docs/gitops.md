@@ -991,10 +991,10 @@ After creation, backups are verified:
 
 1. Archive file exists
 2. Archive is non-empty
-3. Archive is listable with `tar -tzf`
-4. Archive contains at least one entry
-5. Every member can be decompressed and read to EOF under the caller deadline
-   and the total 10 GiB verification bound
+3. Bosun reads the archive in one in-process gzip and tar pass, with no `tar`
+   subprocess: it must contain at least one entry, and every member must
+   decompress and read to EOF under the caller deadline and the total 10 GiB
+   verification bound
 
 ### Rollback Archive Admission
 

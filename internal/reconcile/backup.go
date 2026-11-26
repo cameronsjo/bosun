@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -41,7 +40,7 @@ const MaxVerifyDecompressedBytes int64 = 10 << 30 // 10 GiB
 var ErrBackupTooLarge = errors.New("backup archive exceeds maximum verifiable decompressed size")
 
 // VerifyBackup checks that a backup archive is valid and non-empty.
-// The archive listing runs under ctx so a caller deadline or cancellation
+// The archive read runs under ctx so a caller deadline or cancellation
 // aborts verification rather than blocking on a large/growing archive (#319).
 func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
@@ -66,32 +65,23 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("backup archive is empty: %s", tarFile)
 	}
 
-	// Fast pre-check: the archive lists. Runs under ctx so a caller deadline or
-	// cancellation aborts here before the full read-through (#319).
-	cmd := exec.CommandContext(ctx, "tar", "-tzf", tarFile)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive is corrupted")
-		return fmt.Errorf("backup archive is corrupted: %w: %s", err, stderr.String())
-	}
-
-	// Check archive has at least one file
-	if strings.TrimSpace(stdout.String()) == "" {
-		logger.Error().Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive contains no files")
-		return fmt.Errorf("backup archive contains no files: %s", tarFile)
-	}
-
-	// Integrity check: fully decompress and read every entry to EOF. `tar -tzf`
-	// reads member headers but some tar implementations list a truncated archive
-	// (all headers present, trailing data lost) without error — a truncated
-	// stream a rollback would then trust. Reading through gzip+tar surfaces that
-	// truncation (io.ErrUnexpectedEOF) the listing alone misses (#240).
+	// One in-process pass: list every entry and read each body to EOF. A header-
+	// only listing (`tar -tzf`) can accept a truncated archive whose headers are
+	// intact, so the body read is what proves the stream complete (#240). The same
+	// Go reader later extracts the archive for rollback, so the verifier and the
+	// consumer agree on what a valid archive is.
 	if err := verifyArchiveIntegrity(ctx, tarFile, MaxVerifyDecompressedBytes); err != nil {
-		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive integrity check failed")
-		return fmt.Errorf("backup archive failed integrity check: %w", err)
+		switch {
+		case errors.Is(err, errBackupNoEntries):
+			logger.Error().Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive contains no files")
+			return fmt.Errorf("backup archive contains no files: %s", tarFile)
+		case errors.Is(err, ErrBackupTooLarge) || ctx.Err() != nil:
+			logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive integrity check failed")
+			return fmt.Errorf("backup archive failed integrity check: %w", err)
+		default:
+			logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive is corrupted")
+			return fmt.Errorf("backup archive is corrupted: %w", err)
+		}
 	}
 
 	logger.Debug().Str(log.FieldPath, tarFile).Int64("size_bytes", info.Size()).Msg("Backup archive verified")
@@ -105,10 +95,15 @@ func (d *DeployOps) verifyBackup(ctx context.Context, backupPath string) error {
 	return d.VerifyBackup(ctx, backupPath)
 }
 
+// errBackupNoEntries is returned when a gzip-compressed tar archive reads
+// cleanly but holds no entries.
+var errBackupNoEntries = errors.New("backup archive contains no entries")
+
 // verifyArchiveIntegrity fully reads a gzip-compressed tar archive, decompressing
 // and consuming every entry's data to EOF. Unlike `tar -tzf`, which only needs the
 // member headers, this forces decompression of every byte so a truncated data
 // stream fails with io.ErrUnexpectedEOF instead of being silently accepted (#240).
+// An archive with no entries returns errBackupNoEntries.
 //
 // Two bounds keep a malicious archive from wedging verification (#240):
 //   - a TOTAL decompressed-byte budget (maxBytes): each entry is read through an
@@ -133,6 +128,7 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 
 	tr := tar.NewReader(gz)
 	remaining := maxBytes
+	entries := 0
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -144,6 +140,7 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 		if err != nil {
 			return fmt.Errorf("cannot read archive entry header: %w", err)
 		}
+		entries++
 		// Consume the entry body to force decompression; a truncated stream fails
 		// here rather than being skipped over by a header-only listing. Cap the
 		// read at remaining+1 so a bomb is halted one byte past budget instead of
@@ -157,6 +154,9 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 		if remaining < 0 {
 			return fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
 		}
+	}
+	if entries == 0 {
+		return errBackupNoEntries
 	}
 	return nil
 }
