@@ -401,27 +401,27 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 func generateServiceTemplate(template, name string) string {
 	templates := map[string]string{
-		"webapp": `name: %s
+		"webapp": `name: {{name}}
 provisions:
   - webapp
 config:
   port: 8080
-  domain: %s.example.com
+  domain: {{name}}.example.com
 `,
-		"api": `name: %s
+		"api": `name: {{name}}
 provisions:
   - api
 config:
   port: 8080
   health_path: /health
 `,
-		"worker": `name: %s
+		"worker": `name: {{name}}
 provisions:
   - worker
 config:
   replicas: 1
 `,
-		"static": `name: %s
+		"static": `name: {{name}}
 provisions:
   - static
 config:
@@ -429,7 +429,9 @@ config:
 `,
 	}
 
-	return fmt.Sprintf(templates[template], name, name)
+	// Named placeholders, not fmt verbs: a template that uses the name once
+	// cannot leave an unconsumed argument behind.
+	return strings.ReplaceAll(templates[template], "{{name}}", name)
 }
 
 func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error {
