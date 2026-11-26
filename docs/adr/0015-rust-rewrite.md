@@ -67,7 +67,7 @@ names.
 
 | Alternative | Why not |
 |-------------|---------|
-| Stay on Go | Valid. Pick this if the spikes fail or the goal in the plan's open question 1 does not justify the cost |
+| Stay on Go | Valid. Pick this if the spikes fail, or if the cutover measures show the goals are not met |
 | Port only the daemon to Rust | Two languages and two binaries. Breaks "single binary" |
 | Switch templates to `minijinja` | Breaks every user repo and ADR-0011 (Helm alignment) |
 | Run Go `text/template` as WASM inside the Rust binary | Keeps Go in the build. Ruled out by "all Rust" |
