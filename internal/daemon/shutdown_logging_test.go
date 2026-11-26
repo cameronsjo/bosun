@@ -85,8 +85,10 @@ func socketOnlyDaemon(t *testing.T, socketPath string) *Daemon {
 
 // TestRun_CleanShutdownLogsNoStartFailure pins that a graceful shutdown does not
 // log http.ErrServerClosed as "Failed to start Unix socket server". The server
-// goroutines are joined before Run returns, so the assertion needs no settle
-// time: on the original code the error line is already in the buffer.
+// goroutines are joined before Run returns, so on the fixed code the assertion
+// needs no settle time. On the original code Run did not join the goroutine, so
+// the error line usually (not always) lands before the assertion reads the
+// buffer; the test is red there by timing, and deterministic once fixed.
 func TestRun_CleanShutdownLogsNoStartFailure(t *testing.T) {
 	logs := captureDaemonLogs(t)
 	socketPath := filepath.Join(shortSocketDir(t), "d.sock")

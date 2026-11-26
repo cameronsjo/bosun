@@ -242,6 +242,11 @@ type Daemon struct {
 	// behavior without running the full deploy pipeline.
 	triggerReconcileFn func(context.Context, string, bool) error
 
+	// apiWriteDeadlines overrides the TCP API's response-deadline policy. Nil
+	// means the production defaults; tests set a sub-second policy so a fast
+	// handler can tell which routes extend their deadline and by which factor.
+	apiWriteDeadlines *apiWriteDeadlinePolicy
+
 	// Reconcile state (read frequently for health checks)
 	stateMu       sync.RWMutex
 	lastReconcile time.Time
@@ -609,8 +614,10 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	errCh := make(chan error, 3)
 
 	// The server goroutines join d.wg, which shutdown waits on after the
-	// servers stop, so none can log after Run returns. Each Start returns
-	// http.ErrServerClosed after a graceful Shutdown; that is not a failure.
+	// servers stop, so on a shutdown that finishes within ShutdownTimeout none
+	// of them logs after Run returns (a server whose Shutdown times out can
+	// still log late). Each Start returns http.ErrServerClosed after a graceful
+	// Shutdown; that is not a failure.
 
 	// Start Unix socket server (primary API)
 	logger.Info().Str("socket", d.config.SocketPath).Msg("Preparing to start Unix socket server")

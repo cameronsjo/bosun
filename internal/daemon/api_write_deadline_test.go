@@ -1,8 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -59,58 +60,122 @@ func serveTCPAPI(t *testing.T, d *Daemon, writeTimeout time.Duration) string {
 	return "http://" + ln.Addr().String()
 }
 
-func postRestart(t *testing.T, baseURL string) (*http.Response, error) {
+func doAPIRequest(t *testing.T, baseURL, method, path string) (*http.Response, error) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/api/containers/web/restart", nil)
+	req, err := http.NewRequestWithContext(context.Background(), method, baseURL+path, nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer tok")
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	return httpClient.Do(req)
 }
 
-// TestTCPAPIRestart_SlowHandlerStillDeliversResponse is the handler-level pin
-// for the TCP write deadline. The server's own write deadline is shortened to
-// 300ms and the restart takes 600ms, which is the shape of a restart that runs
-// longer than the server's 30s: the handler stays inside its own context budget
-// but outlives the server deadline. The response must still arrive.
-func TestTCPAPIRestart_SlowHandlerStillDeliversResponse(t *testing.T) {
+// TestTCPAPI_RoutesExtendWriteDeadline pins, per route, that the handler
+// extends its own response deadline and by which factor. The numbers are
+// shrunk through Daemon.apiWriteDeadlines so the test runs in about two
+// seconds:
+//
+//	server write deadline  300ms
+//	BOSUN_API_TIMEOUT      1s
+//	floor 50ms, margin 50ms  =>  factor 1 extends to 1.05s, factor 2 to 2.05s
+//
+// A handler slower than the server deadline delivers its response only if it
+// called the helper. Restart's handler runs 1.5s, between the factor-1 and the
+// factor-2 deadline, so it also fails if its factor is wrong. Each route is
+// exercised alone, so deleting one route's call fails only that route's row.
+func TestTCPAPI_RoutesExtendWriteDeadline(t *testing.T) {
 	tests := []struct {
-		name         string
-		restartDelay time.Duration
+		name      string
+		method    string
+		path      string
+		delay     time.Duration
+		configure func(m *dockertest.MockDockerAPI, delay time.Duration)
 	}{
-		{name: "handler faster than the server deadline", restartDelay: 0},
-		{name: "handler slower than the server deadline", restartDelay: 600 * time.Millisecond},
+		{
+			name:   "container list, slower than the server deadline",
+			method: http.MethodGet,
+			path:   "/api/containers",
+			delay:  600 * time.Millisecond,
+			configure: func(m *dockertest.MockDockerAPI, delay time.Duration) {
+				m.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+					time.Sleep(delay)
+					return client.ContainerListResult{}, nil
+				}
+			},
+		},
+		{
+			name:   "container logs, slower than the server deadline",
+			method: http.MethodGet,
+			path:   "/api/containers/web/logs",
+			delay:  600 * time.Millisecond,
+			configure: func(m *dockertest.MockDockerAPI, delay time.Duration) {
+				m.ContainerLogsFunc = func(_ context.Context, _ string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+					time.Sleep(delay)
+					return io.NopCloser(bytes.NewBufferString("line1\n")), nil
+				}
+			},
+		},
+		{
+			name:   "container restart, between the factor 1 and factor 2 deadlines",
+			method: http.MethodPost,
+			path:   "/api/containers/web/restart",
+			delay:  1500 * time.Millisecond,
+			configure: func(m *dockertest.MockDockerAPI, delay time.Duration) {
+				m.ContainerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+					time.Sleep(delay)
+					return client.ContainerRestartResult{}, nil
+				}
+			},
+		},
+		{
+			name:   "container restart, faster than the server deadline (control)",
+			method: http.MethodPost,
+			path:   "/api/containers/web/restart",
+			delay:  0,
+			configure: func(m *dockertest.MockDockerAPI, delay time.Duration) {
+				m.ContainerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+					time.Sleep(delay)
+					return client.ContainerRestartResult{}, nil
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := dockertest.NewMockDockerAPI()
-			mock.ContainerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
-				time.Sleep(tt.restartDelay)
-				return client.ContainerRestartResult{}, nil
-			}
+			tt.configure(mock, tt.delay)
 			d := newDockerDaemon(t, mock)
+			d.config.APITimeout = time.Second
+			d.apiWriteDeadlines = &apiWriteDeadlinePolicy{
+				floor:   50 * time.Millisecond,
+				margin:  50 * time.Millisecond,
+				ceiling: 10 * time.Second,
+			}
 			baseURL := serveTCPAPI(t, d, 300*time.Millisecond)
 
-			resp, err := postRestart(t, baseURL)
+			resp, err := doAPIRequest(t, baseURL, tt.method, tt.path)
 
 			require.NoError(t, err, "the response must be written before the connection is cut")
 			defer func() { _ = resp.Body.Close() }()
-			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			var body APIRestartResponse
-			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-			assert.Equal(t, "success", body.Status)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err, "the whole response body must arrive")
+			assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 		})
 	}
 }
 
-// TestTCPServer_NonAPIRoutesKeepServerWriteDeadline pins the other half of the
-// per-handler design: only the API routes extend their deadline, so the server
-// default is still 30s for every other route.
-func TestTCPServer_NonAPIRoutesKeepServerWriteDeadline(t *testing.T) {
+// TestNewTCPServer_ServerLimits pins the server-level limits the docs state:
+// the write deadline stays 30s (only the three API routes extend their own), the
+// read deadline is 10s, and IdleTimeout is unset, so net/http uses ReadTimeout
+// as the idle bound. A change to any of them has to change docs/security.md too.
+// Whether a given route extends its deadline is pinned by
+// TestTCPAPI_RoutesExtendWriteDeadline, not here.
+func TestNewTCPServer_ServerLimits(t *testing.T) {
 	d, _ := newTestDaemon(t)
 	tcp, err := NewTCPServer(d, "127.0.0.1:0", "tok")
 	require.NoError(t, err)
 
 	assert.Equal(t, 30*time.Second, tcp.httpServer.WriteTimeout)
+	assert.Equal(t, 10*time.Second, tcp.httpServer.ReadTimeout)
+	assert.Zero(t, tcp.httpServer.IdleTimeout)
 }

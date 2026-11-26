@@ -760,8 +760,14 @@ handler budget plus 5 seconds: `BOSUN_API_TIMEOUT` for list and logs, twice that
 for restart, never below the 30-second default and never above 10 minutes. Every
 other route, including the unauthenticated `/health`, keeps the 30-second
 deadline. A slow-reading authenticated client can therefore hold one of those
-three handlers for up to that long. Idle keep-alive connections are bounded by
+three handlers for up to that long. The ceiling caps only the write deadline,
+not the handler's own context: with `BOSUN_API_TIMEOUT` above about 297 seconds
+(restart) or 595 seconds (list and logs), a response that is ready after the
+10-minute ceiling is cut off, as it was before the extension.
+
+On the TCP API and the Unix socket, idle keep-alive connections are bounded by
 the 10-second `ReadTimeout`, which `net/http` uses when `IdleTimeout` is unset.
+The webhook listener sets its own 60-second idle timeout.
 
 ### Unix socket publication and permissions
 

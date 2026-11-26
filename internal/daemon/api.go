@@ -22,29 +22,58 @@ const (
 	apiWriteDeadlineCeiling = 10 * time.Minute
 )
 
-// apiWriteDeadlineFor returns how long from now a response write may take for a
-// handler whose context budget is factor*apiTimeout, plus the margin. It never
-// shortens the server's own tcpWriteTimeout and never exceeds
-// apiWriteDeadlineCeiling. Restart is the longest API budget (factor 2); a
-// longer future route passes its own factor.
-func apiWriteDeadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
+// apiWriteDeadlinePolicy holds the three numbers behind the extended API write
+// deadline: the floor (the server's own deadline, which an extension never
+// shortens), the margin added to the handler budget, and the ceiling. Production
+// uses defaultAPIWriteDeadlinePolicy. A test sets Daemon.apiWriteDeadlines to a
+// sub-second policy so a fast handler can tell which routes extend their
+// deadline and by which factor.
+type apiWriteDeadlinePolicy struct {
+	floor   time.Duration
+	margin  time.Duration
+	ceiling time.Duration
+}
+
+func defaultAPIWriteDeadlinePolicy() apiWriteDeadlinePolicy {
+	return apiWriteDeadlinePolicy{
+		floor:   tcpWriteTimeout,
+		margin:  apiWriteDeadlineMargin,
+		ceiling: apiWriteDeadlineCeiling,
+	}
+}
+
+// deadlineFor returns how long from now a response write may take for a handler
+// whose context budget is factor*apiTimeout, plus the margin. It never shortens
+// the floor and never exceeds the ceiling. Restart is the longest API budget
+// (factor 2); a longer future route passes its own factor.
+func (p apiWriteDeadlinePolicy) deadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
 	if apiTimeout <= 0 || factor <= 0 {
-		return tcpWriteTimeout
+		return p.floor
 	}
 	// Compare before multiplying: anything past this is capped anyway, and the
 	// product would overflow for a value near the Duration maximum.
-	if apiTimeout > (apiWriteDeadlineCeiling-apiWriteDeadlineMargin)/time.Duration(factor) {
-		return apiWriteDeadlineCeiling
+	if apiTimeout > (p.ceiling-p.margin)/time.Duration(factor) {
+		return p.ceiling
 	}
-	return max(tcpWriteTimeout, time.Duration(factor)*apiTimeout+apiWriteDeadlineMargin)
+	return max(p.floor, time.Duration(factor)*apiTimeout+p.margin)
 }
 
-// extendAPIWriteDeadline moves this response's write deadline out to cover the
-// handler's budget (see apiWriteDeadlineFor). A writer that cannot change its
-// deadline (httptest.ResponseRecorder, or a wrapper without Unwrap) reports
-// ErrNotSupported; the server's own deadline then stands and the request goes on.
-func extendAPIWriteDeadline(w http.ResponseWriter, apiTimeout time.Duration, factor int64) {
-	deadline := time.Now().Add(apiWriteDeadlineFor(apiTimeout, factor))
+// apiWriteDeadlineFor is deadlineFor under the production policy.
+func apiWriteDeadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
+	return defaultAPIWriteDeadlinePolicy().deadlineFor(apiTimeout, factor)
+}
+
+// extendAPIWriteDeadline moves this response's write deadline out to cover a
+// handler whose budget is factor*BOSUN_API_TIMEOUT (see deadlineFor). A writer
+// that cannot change its deadline (httptest.ResponseRecorder, or a wrapper
+// without Unwrap) reports ErrNotSupported; the server's own deadline then
+// stands and the request goes on.
+func (d *Daemon) extendAPIWriteDeadline(w http.ResponseWriter, factor int64) {
+	policy := defaultAPIWriteDeadlinePolicy()
+	if d.apiWriteDeadlines != nil {
+		policy = *d.apiWriteDeadlines
+	}
+	deadline := time.Now().Add(policy.deadlineFor(d.config.APITimeout, factor))
 	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil {
 		logger := log.Component(log.ComponentHTTP)
 		logger.Debug().
@@ -173,7 +202,7 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
-	extendAPIWriteDeadline(w, d.config.APITimeout, 1)
+	d.extendAPIWriteDeadline(w, 1)
 
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
@@ -259,7 +288,7 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
-	extendAPIWriteDeadline(w, d.config.APITimeout, 1)
+	d.extendAPIWriteDeadline(w, 1)
 
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
 	if err != nil {
@@ -298,7 +327,7 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*d.config.APITimeout)
 	defer cancel()
-	extendAPIWriteDeadline(w, d.config.APITimeout, 2)
+	d.extendAPIWriteDeadline(w, 2)
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
 		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to restart container")
