@@ -319,6 +319,8 @@ Displays:
 - Network info (tailnet, peer count)
 - Online peers
 
+For a Cloudflare tunnel, the `tunnel_name`, `hostname` and `health_endpoint` keys in the `tunnel:` section of `bosun.yaml` decide how the status is read: `cloudflared tunnel info` when `tunnel_name` is set, otherwise a request to `health_endpoint`, otherwise a check for a running `cloudflared` process. `bosun doctor` reads the same keys.
+
 ## Diagnostics Commands
 
 ### status
