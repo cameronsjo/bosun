@@ -195,6 +195,27 @@ func TestClient_Exists_SendsAnchoredNameFilter(t *testing.T) {
 	}
 }
 
+func TestContainerInfoFromSummary_IDLength(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{name: "full ID is cut to 12", id: "0123456789abcdef0123", want: "0123456789ab"},
+		{name: "exactly 12", id: "0123456789ab", want: "0123456789ab"},
+		{name: "short ID is kept whole", id: "abc", want: "abc"},
+		{name: "empty ID", id: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := containerInfoFromSummary(container.Summary{ID: tt.id, Names: []string{"/web"}})
+			assert.Equal(t, tt.want, got.ID)
+			assert.Equal(t, "web", got.Name)
+		})
+	}
+}
+
 func TestClient_Exists_FalseAmongDecoys(t *testing.T) {
 	mock := NewMockDockerAPI()
 	mock.ContainerListFunc = func(context.Context, client.ContainerListOptions) (client.ContainerListResult, error) {

@@ -221,6 +221,22 @@ func exactNameFilter(name string) client.Filters {
 	return make(client.Filters).Add("name", "^/"+regexp.QuoteMeta(name)+"$")
 }
 
+// listByName returns the list entries, running or stopped, that Docker matches
+// to normalizedName (the container name without its leading slash). Docker may
+// also return link-name matches, so each caller applies its own exact-name
+// rule to the result. GetContainerByName and Exists both go through here, so
+// the filter and the list options live in one place.
+func (c *Client) listByName(ctx context.Context, normalizedName string) ([]container.Summary, error) {
+	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: exactNameFilter(normalizedName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+	return listResult.Items, nil
+}
+
 // CountContainers returns counts of running, total, and unhealthy containers.
 func (c *Client) CountContainers(ctx context.Context) (running, total, unhealthy int, err error) {
 	start := time.Now()
@@ -258,16 +274,13 @@ func (c *Client) GetContainerByName(ctx context.Context, name string) (*Containe
 	logger.Debug().Str(log.FieldContainer, name).Msg("Looking up container by name")
 
 	normalizedName := strings.TrimPrefix(name, "/")
-	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
-		All:     true,
-		Filters: exactNameFilter(normalizedName),
-	})
+	items, err := c.listByName(ctx, normalizedName)
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for lookup")
-		return nil, fmt.Errorf("list containers: %w", err)
+		return nil, err
 	}
 
-	for _, ctr := range listResult.Items {
+	for _, ctr := range items {
 		info := containerInfoFromSummary(ctr)
 		if info.Name == normalizedName {
 			logger.Debug().Str(log.FieldContainer, name).Msg("Found container")
