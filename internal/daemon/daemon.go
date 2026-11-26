@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -601,36 +602,46 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	ctx = d.resetLifecycleContext(ctx)
 	defer d.cancelLifecycle()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	sigCh, stopSignals := notifyShutdown(syscall.SIGTERM, syscall.SIGINT)
+	defer stopSignals()
 
 	// Error channel for goroutines
 	errCh := make(chan error, 3)
 
+	// The server goroutines join d.wg, which shutdown waits on after the
+	// servers stop, so none can log after Run returns. Each Start returns
+	// http.ErrServerClosed after a graceful Shutdown; that is not a failure.
+
 	// Start Unix socket server (primary API)
 	logger.Info().Str("socket", d.config.SocketPath).Msg("Preparing to start Unix socket server")
+	d.wg.Add(1)
 	go func() {
+		defer d.wg.Done()
 		defer sentrypkg.Recover()
-		if err := d.socketServer.Start(); err != nil {
+		startErr := d.socketServer.Start()
+		if err := serverExitError("socket server", startErr); err != nil {
 			logger.Error().
-				Err(err).
+				Err(startErr).
 				Str("socket", d.config.SocketPath).
 				Msg("Failed to start Unix socket server")
-			errCh <- fmt.Errorf("socket server: %w", err)
+			errCh <- err
 		}
 	}()
 
 	// Start TCP server for remote access (optional)
 	if d.config.EnableTCP && d.tcpServer != nil {
 		logger.Info().Str("addr", d.config.TCPAddr).Msg("Preparing to start TCP server")
+		d.wg.Add(1)
 		go func() {
+			defer d.wg.Done()
 			defer sentrypkg.Recover()
-			if err := d.tcpServer.Start(); err != nil {
+			startErr := d.tcpServer.Start()
+			if err := serverExitError("TCP server", startErr); err != nil {
 				logger.Error().
-					Err(err).
+					Err(startErr).
 					Str("addr", d.config.TCPAddr).
 					Msg("Failed to start TCP server")
-				errCh <- fmt.Errorf("TCP server: %w", err)
+				errCh <- err
 			}
 		}()
 	}
@@ -638,14 +649,17 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	// Start HTTP server for webhooks (optional)
 	if d.config.EnableHTTP && d.httpServer != nil {
 		logger.Info().Int("port", d.config.Port).Msg("Preparing to start HTTP server")
+		d.wg.Add(1)
 		go func() {
+			defer d.wg.Done()
 			defer sentrypkg.Recover()
-			if err := d.httpServer.Start(d.config.Port); err != nil {
+			startErr := d.httpServer.Start(d.config.Port)
+			if err := serverExitError("HTTP server", startErr); err != nil {
 				logger.Error().
-					Err(err).
+					Err(startErr).
 					Int("port", d.config.Port).
 					Msg("Failed to start HTTP server")
-				errCh <- fmt.Errorf("HTTP server: %w", err)
+				errCh <- err
 			}
 		}()
 	}
@@ -811,6 +825,25 @@ func (d *Daemon) runTriggerReconcile(ctx context.Context, source string, force b
 		return d.triggerReconcileFn(ctx, source, force)
 	}
 	return d.TriggerReconcile(ctx, source, force)
+}
+
+// serverExitError reports whether a server's Start/Serve return is a real
+// failure. A nil return and http.ErrServerClosed (what Serve returns after a
+// graceful Shutdown) are not; anything else is named and wrapped.
+func serverExitError(name string, err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", name, err)
+}
+
+// notifyShutdown registers a channel for the given signals and returns it with a
+// stop func that unregisters it. The caller defers stop so the channel does not
+// stay registered, and keep swallowing the signals, after the caller returns.
+func notifyShutdown(sigs ...os.Signal) (<-chan os.Signal, func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, sigs...)
+	return ch, func() { signal.Stop(ch) }
 }
 
 // shutdown performs graceful shutdown of all components.

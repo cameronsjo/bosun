@@ -434,8 +434,11 @@ bosun daemon -n                       # Dry run mode
 
 The webhook, Unix socket, and optional TCP HTTP servers all allow at most 5
 seconds to receive request headers and set a 32 KiB request-header parsing
-limit. These transport limits are fixed security defaults and do not change
-the existing per-operation `BOSUN_API_TIMEOUT` behavior.
+limit. These header limits are fixed security defaults. The TCP API's response
+write deadline is 30 seconds, except on the three authenticated routes that run
+under `BOSUN_API_TIMEOUT` (container list, logs, restart): each extends its own
+deadline to its handler budget plus 5 seconds (restart is twice
+`BOSUN_API_TIMEOUT`), never above 10 minutes.
 
 The Unix socket is `0660` by default. Bosun creates it behind a private `0700`
 staging directory, applies the configured `SocketMode`, and atomically publishes

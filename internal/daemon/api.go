@@ -13,6 +13,45 @@ import (
 	"github.com/cameronsjo/bosun/internal/reconcile"
 )
 
+const (
+	// apiWriteDeadlineMargin is the time left to write a response after the
+	// handler's own context budget runs out.
+	apiWriteDeadlineMargin = 5 * time.Second
+	// apiWriteDeadlineCeiling bounds the extended deadline so a huge
+	// BOSUN_API_TIMEOUT cannot produce an unbounded or overflowed one.
+	apiWriteDeadlineCeiling = 10 * time.Minute
+)
+
+// apiWriteDeadlineFor returns how long from now a response write may take for a
+// handler whose context budget is factor*apiTimeout, plus the margin. It never
+// shortens the server's own tcpWriteTimeout and never exceeds
+// apiWriteDeadlineCeiling. Restart is the longest API budget (factor 2); a
+// longer future route passes its own factor.
+func apiWriteDeadlineFor(apiTimeout time.Duration, factor int64) time.Duration {
+	if apiTimeout <= 0 || factor <= 0 {
+		return tcpWriteTimeout
+	}
+	// Compare before multiplying: anything past this is capped anyway, and the
+	// product would overflow for a value near the Duration maximum.
+	if apiTimeout > (apiWriteDeadlineCeiling-apiWriteDeadlineMargin)/time.Duration(factor) {
+		return apiWriteDeadlineCeiling
+	}
+	return max(tcpWriteTimeout, time.Duration(factor)*apiTimeout+apiWriteDeadlineMargin)
+}
+
+// extendAPIWriteDeadline moves this response's write deadline out to cover the
+// handler's budget (see apiWriteDeadlineFor). A writer that cannot change its
+// deadline (httptest.ResponseRecorder, or a wrapper without Unwrap) reports
+// ErrNotSupported; the server's own deadline then stands and the request goes on.
+func extendAPIWriteDeadline(w http.ResponseWriter, apiTimeout time.Duration, factor int64) {
+	deadline := time.Now().Add(apiWriteDeadlineFor(apiTimeout, factor))
+	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil {
+		log.Component(log.ComponentHTTP).Debug().
+			Err(err).
+			Msg("Could not extend the response write deadline; the server default stands")
+	}
+}
+
 // APIStatusResponse is the extended status response for the WebUI API.
 type APIStatusResponse struct {
 	Health        string               `json:"health"`
@@ -133,6 +172,7 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
+	extendAPIWriteDeadline(w, d.config.APITimeout, 1)
 
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
@@ -218,6 +258,7 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
+	extendAPIWriteDeadline(w, d.config.APITimeout, 1)
 
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
 	if err != nil {
@@ -256,6 +297,7 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*d.config.APITimeout)
 	defer cancel()
+	extendAPIWriteDeadline(w, d.config.APITimeout, 2)
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
 		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to restart container")

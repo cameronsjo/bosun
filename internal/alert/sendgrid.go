@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,11 @@ import (
 )
 
 const sendGridAPIEndpoint = "https://api.sendgrid.com/v3/mail/send"
+
+// maxSendGridErrorBodySize bounds how much of a non-202 response body is read,
+// the same 1 MiB budget the Twilio provider uses. A body past it fails to parse
+// and the error falls back to the status code.
+const maxSendGridErrorBodySize = 1 << 20
 
 // SendGridConfig holds configuration for the SendGrid email provider.
 type SendGridConfig struct {
@@ -104,7 +110,7 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 	// SendGrid returns 202 Accepted on success
 	if resp.StatusCode != http.StatusAccepted {
 		var errResp sendGridErrorResponse
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && len(errResp.Errors) > 0 {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxSendGridErrorBodySize)).Decode(&errResp); err == nil && len(errResp.Errors) > 0 {
 			logger.Error().
 				Int(log.FieldStatus, resp.StatusCode).
 				Str("error_message", errResp.Errors[0].Message).
