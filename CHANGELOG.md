@@ -45,6 +45,7 @@ OpenSSH default stores; container-only pins must be persisted.
 
 ### Bug Fixes
 
+* **fileutil:** refuse symlinked and special-file sources without following or blocking ([#913](https://github.com/cameronsjo/bosun/issues/913)) ([9b62e6c](https://github.com/cameronsjo/bosun/commit/9b62e6cf7ea1c861b8e0070adf8632d73443adc2))
 * **reconcile:** bound remote compose, rollback and health gate deadlines; fail safe on incomplete diff trees ([#912](https://github.com/cameronsjo/bosun/issues/912)) ([0495bf1](https://github.com/cameronsjo/bosun/commit/0495bf131a8b95dabd1242fc25f0bf6b0ef7c7db))
 
 ## [0.49.17](https://github.com/cameronsjo/bosun/compare/v0.49.16...v0.49.17) (2026-11-26)
