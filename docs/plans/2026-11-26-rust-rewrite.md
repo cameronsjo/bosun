@@ -3,8 +3,9 @@
 - **Status:** Draft, for review. Nothing here is implemented.
 - **Decision record:** [ADR-0015](../adr/0015-rust-rewrite.md) (Proposed)
 - **Baseline:** `main` at `82f19b7` (2026-11-26)
-- **Scope:** the `bosun` binary (`cmd/`, `internal/`). The web UI (`webui/`),
-  docs site (`site/`), and manifest fixtures stay as they are.
+- **Scope:** the `bosun` binary (`cmd/`, `internal/`) and the Go Dagger
+  module (`dagger/`). The web UI (`webui/`), docs site (`site/`), and
+  manifest fixtures stay as they are.
 
 ## Summary
 
@@ -22,6 +23,40 @@ with a pass/fail bar **before** any other porting starts:
    control today. The Rust options are weaker or pull in C.
 
 If a spike fails its bar, stop and re-decide. Do not port around it.
+
+## Decisions from review (2026-11-26)
+
+Cameron answered the first round of open questions:
+
+| Question | Answer | Effect on the plan |
+|----------|--------|--------------------|
+| Why Rust? | Safety, interop, a lower footprint, and Rust as the long-term language | Cutover measures these (below) |
+| Template approach | All Rust if we commit | Spike 1 is a pure-Rust engine. The WASM option is dropped |
+| SOPS key types | Age only | Port is age-only. Other key types fail loudly |
+| Windows | Out of scope | Linux and macOS only. The `_windows.go` paths are not ported |
+
+**All Rust** means no Go code we own survives cutover: not in the binary,
+not in the build. Two consequences:
+
+- The Dagger module (`dagger/main.go`) is Go. Phase 6 either ports it to
+  the Dagger Rust SDK or retires Dagger. Retiring it needs an ADR that
+  supersedes [ADR-0003](../adr/0003-dagger-for-bosun.md) (Dagger).
+- External tools stay allowed. `docker compose` and OpenSSH `ssh` are
+  already subprocesses today and are not Go code bosun owns.
+
+**What cutover measures**, against the last Go release on the same host:
+
+- Daemon memory: idle RSS and peak RSS during a full reconcile.
+- Binary size and container image size.
+- `unsafe`: every bosun crate sets `#![forbid(unsafe_code)]`. Dependencies
+  with `unsafe` are listed in the release notes, reviewed via `cargo-geiger`.
+- Supply chain: `cargo-deny` (licenses, advisories, duplicate crates) and
+  `cargo-audit` in CI.
+
+**Age-only SOPS lands on Go first.** An OpenSpec change (working name
+`restrict-sops-to-age`) makes the Go binary reject non-age key groups with a
+clear error. Then Go and Rust agree, and the parity harness has no known
+diff to carry.
 
 ## What we are porting
 
@@ -67,8 +102,8 @@ version picks the archive by that name pattern and verifies it against
 `checksums.txt`. If the Rust release names assets differently, every
 existing install strands on Go.
 
-Any intended behavior change (for example, dropping non-age SOPS keys) is a
-spec change. It needs an `openspec/changes/<id>/` proposal first, per
+Any intended behavior change (for example, age-only SOPS) is a spec
+change. It needs an `openspec/changes/<id>/` proposal first, per
 `AGENTS.md` § Spec Before Code.
 
 ## Spikes (phase 0)
@@ -89,10 +124,10 @@ Options:
 |--------|--------------------|------|
 | **A. Go-compatible engine in Rust** (extend the `gtmpl` crate or write one) | Yes | 3–5k lines: pipelines, `range`/`with`/`else if`, `define`/`template`/`block`, `{{-` trim, sorted map `range`, Go truthiness, plus the Sprig subset bosun allows |
 | B. Switch to `minijinja` and ship a converter | No. Breaks every user repo and [ADR-0011](../adr/0011-helm-alignment.md) (Helm alignment) | Converter plus a migration window |
-| C. Run Go `text/template` compiled to WASM inside the Rust binary | Yes | Adds `wasmtime` and ~15 MB. Keeps a Go toolchain in the build |
 
-**Lean: A.** Fall back to C if A misses the bar. B only with an explicit
-breaking-change decision.
+**Chosen: A** (all Rust). If A misses the bar, the choice is B (a
+breaking change for every user repo) or staying on Go. That goes back to
+Cameron.
 
 **Pass bar:** byte-identical output against Go on every template in
 `examples/`, `manifest/`, the test fixtures, and Cameron's live infra repo.
@@ -106,10 +141,9 @@ port would implement SOPS decrypt directly: age-wrapped data key,
 `ENC[AES256_GCM,...]` values with the key path as AAD, and MAC check. The
 `age` and `aes-gcm` crates are mature.
 
-Open question for Cameron: does any real repo use a non-age key group
-(PGP, AWS/GCP KMS, Azure Key Vault, Vault)? `decrypt.File` accepts them
-today. The lean is age-only, failing loudly on other key types, behind a
-spec change.
+Scope: **age only** (Cameron, 2026-11-26). PGP, AWS/GCP KMS, Azure Key
+Vault, and HashiCorp Vault key groups fail with a clear error. The
+`restrict-sops-to-age` spec change lands on Go first (see Decisions).
 
 **Pass bar:** decrypts every vector produced by the real `sops` binary for
 all four formats, including nested keys, `unencrypted_suffix`, and
@@ -160,9 +194,9 @@ credential pairing, and cross-origin redirect refusal. Shallow fetch with
 | OpenTelemetry | `opentelemetry` + `opentelemetry-otlp` (HTTP) | Medium. Crate API churns |
 | `shellquote`, `uuid`, `semver` | `shlex`, `uuid`, `semver` | Low |
 
-Windows: the Go tree has `_windows.go` files, but releases ship only Linux
-and macOS. The port targets `x86_64`/`aarch64` for Linux (musl, static) and
-macOS. Windows stays out unless Cameron wants it.
+Platforms: `x86_64` and `aarch64` for Linux (musl, static) and macOS.
+Windows is out of scope (Cameron, 2026-11-26). The Go `_windows.go` files
+are not ported.
 
 ## Layout
 
@@ -213,7 +247,7 @@ the spikes land.
 | 3 | Reconcile engine: the 9-step pipeline, multi-target, backup/rollback, health gate, restart breaker, hooks, drift | All `reconcile` and `reconcile-fuse-hooks` scenarios pass; state files round-trip with Go | 3–4 weeks |
 | 4 | Daemon: socket (0660 staged publish, peer UID), webhooks (HMAC, 1 MiB cap, fail-closed), single-flight with counted coalescing, drift loop, self-heal | Black-box HTTP suite passes against both binaries | 2 weeks |
 | 5 | Remaining commands and services: `update`, `doctor`, `status`, `crew`, `yacht`, `mayday`, `migrate`, Sentry, OTel, metrics | Every CLI golden and the `self-update`/`observability` scenarios pass | 1–2 weeks |
-| 6 | Release: goreleaser Rust builder (or `cargo-zigbuild`) behind Dagger, Cosign, same asset names, same image | A pre-release tag self-updates from the last Go release in a test container | 3–5 days |
+| 6 | Release: goreleaser Rust builder (or `cargo-zigbuild`), Cosign, same asset names, same image. Port the Dagger module to Rust or retire Dagger | A pre-release tag self-updates from the last Go release in a test container | 3–5 days |
 | 7 | Shadow run on the Unraid host (below) | Two weeks, zero unexplained diffs | 2 weeks elapsed |
 | 8 | Cutover and Go removal | One clean release cycle on Rust | 1–2 weeks elapsed |
 
@@ -303,18 +337,18 @@ dedicated test before phase 4 closes.
 | Port stalls mid-way | Two half-products | Go ships until cutover; each phase is useful on its own |
 | `main` keeps moving | Parity never converges | Spec-scenario check; freeze large features during phase 3 |
 | Rust build disk use | Agent gate rejects work | Cargo gate variant in phase 1 |
+| Dagger Rust SDK too immature | Release pipeline stuck on Go | Retire Dagger for plain Actions + goreleaser, with an ADR |
 
-## Open questions for Cameron
+## Open decisions
 
-1. **Goal.** What is the main reason for Rust: memory and footprint on the
-   host, stronger types around the concurrency rules, one language with
-   other Rust tools, or something else? The answer changes what we measure
-   at cutover.
-2. **Templates.** OK with option A (Go-compatible engine), with WASM as the
-   fallback and no syntax change for users?
-3. **SOPS keys.** Is age the only key type in real use? If yes, the port
-   drops PGP and cloud KMS behind a spec change.
-4. **Windows.** Out of scope?
+The first round is answered (see [Decisions](#decisions-from-review-2026-11-26)).
+These are decided inside a phase, not up front:
+
+1. **YAML crate** (phase 1): a maintained `serde_yaml` fork or `saphyr`,
+   picked by byte-stable `toYaml` output against Go.
+2. **Glob crate** (phase 1): `globset` or `wax`, picked by differential
+   tests against `doublestar`.
+3. **Dagger** (phase 6): port to the Rust SDK or retire it.
 
 ## Not in scope
 
