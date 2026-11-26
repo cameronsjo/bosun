@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
+	"filippo.io/age/armor"
 	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -287,8 +289,17 @@ func TestCheckAgeKey(t *testing.T) {
 	})
 
 	t.Run("encrypted SOPS_AGE_KEY is labeled as needing a passphrase", func(t *testing.T) {
-		const bodySentinel = "ARMORBODYSENTINEL"
-		t.Setenv("SOPS_AGE_KEY", "-----BEGIN AGE ENCRYPTED FILE-----\n"+bodySentinel+"\n-----END AGE ENCRYPTED FILE-----\n")
+		// Well-formed armor built here, so no fixture is pasted; the payload
+		// is arbitrary bytes, not a real encrypted identity.
+		var armored bytes.Buffer
+		w := armor.NewWriter(&armored)
+		_, err := w.Write([]byte("test-only payload, not an encrypted identity"))
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+		bodySentinel := strings.Split(armored.String(), "\n")[1]
+		require.NotEmpty(t, bodySentinel)
+
+		t.Setenv("SOPS_AGE_KEY", armored.String())
 		t.Setenv("SOPS_AGE_KEY_FILE", "")
 		t.Setenv("HOME", t.TempDir())
 

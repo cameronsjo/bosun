@@ -3,6 +3,7 @@ module github.com/cameronsjo/bosun
 go 1.26.0
 
 require (
+	filippo.io/age v1.3.1
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/bmatcuk/doublestar/v4 v4.10.4
@@ -45,7 +46,6 @@ require (
 	cloud.google.com/go/storage v1.63.1 // indirect
 	code.gitea.io/sdk/gitea v0.25.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
-	filippo.io/age v1.3.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/42wim/httpsig v1.2.4 // indirect

@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
+	"filippo.io/age/armor"
+	"filippo.io/age/plugin"
 	sopslib "github.com/getsops/sops/v3"
 	sopsaes "github.com/getsops/sops/v3/aes"
 	sopsage "github.com/getsops/sops/v3/age"
@@ -808,10 +811,24 @@ func TestSOPSOps_CheckAgeKeyInlineValue(t *testing.T) {
 		// checksum fails.
 		badChecksumIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VQ"
 		inlineSentinel      = "not-a-key-SENTINEL-7f3a"
-		armorBodySentinel   = "ARMORBODYSENTINEL"
 		binaryBodySentinel  = "BINARYBODYSENTINEL"
+		malformedArmorBody  = "not base64 !!"
 		inlineErrorText     = "SOPS_AGE_KEY does not contain a parseable Age identity"
 	)
+
+	// A well-formed armored value, built here so no fixture is pasted. The
+	// payload is arbitrary bytes, not a real encrypted identity: Bosun reads
+	// the armor but cannot check the passphrase.
+	armored, armorBody := armorForTest(t, []byte("test-only payload, not an encrypted identity"))
+
+	// A plugin identity only needs a valid bech32 encoding to parse; parsing
+	// it runs no plugin binary.
+	pluginIdentity := plugin.EncodeIdentity("bosuntest", []byte("test-only plugin data"))
+	require.NotEmpty(t, pluginIdentity)
+
+	hybrid, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+	hybridIdentity := hybrid.String()
 
 	tests := []struct {
 		name             string
@@ -830,17 +847,27 @@ func TestSOPSOps_CheckAgeKeyInlineValue(t *testing.T) {
 		{name: "bad checksum", value: badChecksumIdentity, wantErr: true, wantInlineError: true, mustNotEcho: []string{badChecksumIdentity}},
 		{
 			name:            "leading space before armored header",
-			value:           " -----BEGIN AGE ENCRYPTED FILE-----\n" + armorBodySentinel + "\n-----END AGE ENCRYPTED FILE-----",
+			value:           " " + armored,
 			wantErr:         true,
 			wantInlineError: true,
-			mustNotEcho:     []string{armorBodySentinel},
+			mustNotEcho:     []string{armorBody},
 		},
 		{
-			name:        "armored encrypted key is accepted with a warning",
-			value:       "-----BEGIN AGE ENCRYPTED FILE-----\n" + armorBodySentinel + "\n-----END AGE ENCRYPTED FILE-----\n",
+			name:        "well-formed armored encrypted key is accepted with a warning",
+			value:       armored,
 			wantLog:     `"key_format":"armored"`,
-			mustNotEcho: []string{armorBodySentinel},
+			mustNotEcho: []string{armorBody},
 		},
+		{
+			name:            "malformed armor is rejected",
+			value:           "-----BEGIN AGE ENCRYPTED FILE-----\n" + malformedArmorBody + "\n-----END AGE ENCRYPTED FILE-----",
+			wantErr:         true,
+			wantInlineError: true,
+			mustNotEcho:     []string{malformedArmorBody},
+		},
+		{name: "plugin identity is accepted", value: pluginIdentity, mustNotEcho: []string{pluginIdentity}},
+		{name: "post-quantum hybrid identity is accepted", value: hybridIdentity, mustNotEcho: []string{hybridIdentity}},
+		{name: "indented comment line is not a comment", value: "\t# note\n" + firstIdentity, wantErr: true, wantInlineError: true, mustNotEcho: []string{firstIdentity}},
 		{
 			name:        "binary encrypted key is accepted with a warning",
 			value:       "age-encryption.org/v1\n-> X25519 " + binaryBodySentinel + "\n",
@@ -901,6 +928,33 @@ func TestSOPSOps_CheckAgeKeyInlineValue(t *testing.T) {
 func TestClassifyInlineAgeKey_OverlongLineIsInvalid(t *testing.T) {
 	value := "#" + strings.Repeat("A", 70*1024)
 	assert.Equal(t, InlineAgeKeyInvalid, ClassifyInlineAgeKey(value))
+}
+
+// TestClassifyInlineAgeKey_EncryptedIdentitySizeLimit pins the 16 MiB bound
+// SOPS puts on an encrypted identity: a value that reaches it is too long.
+func TestClassifyInlineAgeKey_EncryptedIdentitySizeLimit(t *testing.T) {
+	prefix := "age-encryption.org/v1\n"
+	assert.Equal(t, InlineAgeKeyEncryptedBinary,
+		ClassifyInlineAgeKey(prefix+strings.Repeat("A", encryptedIdentitySizeLimit-len(prefix)-1)),
+		"one byte under the bound is still readable")
+	assert.Equal(t, InlineAgeKeyInvalid,
+		ClassifyInlineAgeKey(prefix+strings.Repeat("A", encryptedIdentitySizeLimit-len(prefix))),
+		"a value that reaches the bound is too long")
+}
+
+// armorForTest armors payload with the age armor writer and returns the full
+// armored text and its first body line, which must never be echoed.
+func armorForTest(t *testing.T, payload []byte) (armored, body string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := armor.NewWriter(&buf)
+	_, err := w.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	armored = buf.String()
+	lines := strings.Split(armored, "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	return armored, lines[1]
 }
 
 func TestSOPSOps_CheckAgeKeyInjectedReaderErrors(t *testing.T) {

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"filippo.io/age/armor"
 	"github.com/cameronsjo/bosun/internal/log"
 	sopslib "github.com/getsops/sops/v3"
 	sopsage "github.com/getsops/sops/v3/age"
@@ -222,7 +224,10 @@ const (
 // ClassifyInlineAgeKey judges a SOPS_AGE_KEY value with the rules the SOPS
 // age key source (v3.13.3) applies to that variable:
 //   - a value whose raw bytes begin with "age-encryption" or "-----BEGIN AGE"
-//     is a passphrase-encrypted identity file;
+//     is a passphrase-encrypted identity file. It is read the way SOPS reads
+//     it (age/encrypted_keys.go): an armored value through the age armor
+//     decoder, either kind bounded at 16 MiB. A read error or a value that
+//     reaches the bound is invalid; the passphrase itself is not checked;
 //   - otherwise the value is read line by line, a raw line that is empty or
 //     starts with "#" is skipped, and every other line is split on whitespace;
 //   - every word must parse as exactly one identity. A word starting with "#"
@@ -238,8 +243,14 @@ const (
 func ClassifyInlineAgeKey(value string) InlineAgeKeyState {
 	switch {
 	case strings.HasPrefix(value, "age-encryption"):
+		if !encryptedIdentityReadable(strings.NewReader(value)) {
+			return InlineAgeKeyInvalid
+		}
 		return InlineAgeKeyEncryptedBinary
 	case strings.HasPrefix(value, "-----BEGIN AGE"):
+		if !encryptedIdentityReadable(armor.NewReader(strings.NewReader(value))) {
+			return InlineAgeKeyInvalid
+		}
 		return InlineAgeKeyEncryptedArmored
 	}
 
@@ -265,6 +276,20 @@ func ClassifyInlineAgeKey(value string) InlineAgeKeyState {
 		return InlineAgeKeyEmpty
 	}
 	return InlineAgeKeyValid
+}
+
+// encryptedIdentitySizeLimit matches the 16 MiB bound SOPS puts on an
+// encrypted identity (age/encrypted_keys.go privateKeySizeLimit).
+const encryptedIdentitySizeLimit = 1 << 24
+
+// encryptedIdentityReadable reports whether an encrypted identity reads the
+// way SOPS reads it before asking for the passphrase: through the armor decoder
+// when armored, bounded at encryptedIdentitySizeLimit, where reaching the limit
+// counts as too long. The read error is discarded unformatted: armor errors
+// quote input lines, which here are key material.
+func encryptedIdentityReadable(r io.Reader) bool {
+	contents, err := io.ReadAll(io.LimitReader(r, encryptedIdentitySizeLimit))
+	return err == nil && len(contents) < encryptedIdentitySizeLimit
 }
 
 func ageIdentityFileError(source, path string, cause error) error {

@@ -615,8 +615,11 @@ reject fails startup with an error naming `SOPS_AGE_KEY`, even when a valid key
 file is also configured. A value that holds no identity (blank, or comment lines
 only) is treated as unset, so the file sources below are checked, as SOPS does.
 A passphrase-encrypted identity (a value starting with `age-encryption` or
-`-----BEGIN AGE`) cannot be checked without its passphrase; Bosun accepts it and
-logs a warning, because a headless daemon cannot prompt for the passphrase.
+`-----BEGIN AGE`) is read the way SOPS reads it before asking for the
+passphrase: armored text through the age armor decoder, at most 16 MiB. A value
+that fails that read, such as malformed armor, fails startup. A well-formed one
+cannot be checked further without its passphrase, so Bosun accepts it and logs
+a warning, because a headless daemon cannot prompt for the passphrase.
 Neither the value nor the parse error is ever logged or returned.
 
 When Bosun resolves a
