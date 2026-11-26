@@ -271,17 +271,6 @@ patterns (matched against staging directory entries). When non-empty, only
 matching targets are synced. When empty or absent, all discovered targets are
 synced (default: auto-discover everything).
 
-`deploy_sync_exclude` in `bosun.yaml` SHALL accept a list of glob patterns.
-Targets matching any exclude pattern SHALL be skipped. Exclude takes precedence
-over include.
-
-`BOSUN_DEPLOY_SYNC_PATHS` (JSON string array) SHALL override `deploy_sync_paths`
-from `bosun.yaml` when set. `BOSUN_DEPLOY_SYNC_EXCLUDE` (JSON string array)
-SHALL override `deploy_sync_exclude` from `bosun.yaml` when set.
-
-The config SHALL be reloaded from the repo's `bosun.yaml` after each git pull,
-unless the corresponding env var override is set.
-
 #### Scenario: Default auto-discovery syncs everything
 
 - **WHEN** neither `deploy_sync_paths` nor `deploy_sync_exclude` is configured
@@ -292,16 +281,31 @@ unless the corresponding env var override is set.
 - **WHEN** `bosun.yaml` contains `deploy_sync_paths: ["appdata/traefik", "compose"]`
 - **THEN** only `appdata/traefik` and `compose` targets are synced
 
-#### Scenario: Env var overrides config file allowlist
+### Requirement: Deploy Sync Exclusion
 
-- **WHEN** `bosun.yaml` sets `deploy_sync_paths: ["appdata/traefik"]`
-- **AND** `BOSUN_DEPLOY_SYNC_PATHS` is set to `["appdata/traefik", "appdata/gatus"]`
-- **THEN** the reconciler uses `["appdata/traefik", "appdata/gatus"]` from the env var
+`deploy_sync_exclude` in `bosun.yaml` SHALL accept a list of glob patterns.
+Targets matching any exclude pattern SHALL be skipped. Exclude takes precedence
+over include.
 
 #### Scenario: Exclude from bosun.yaml
 
 - **WHEN** `bosun.yaml` contains `deploy_sync_exclude: ["**/test-*"]`
 - **THEN** targets matching `**/test-*` are excluded from sync
+
+### Requirement: Deploy Sync Overrides and Reload
+
+`BOSUN_DEPLOY_SYNC_PATHS` (JSON string array) SHALL override `deploy_sync_paths`
+from `bosun.yaml` when set. `BOSUN_DEPLOY_SYNC_EXCLUDE` (JSON string array)
+SHALL override `deploy_sync_exclude` from `bosun.yaml` when set.
+
+The config SHALL be reloaded from the repo's `bosun.yaml` after each git pull,
+unless the corresponding env var override is set.
+
+#### Scenario: Env var overrides config file allowlist
+
+- **WHEN** `bosun.yaml` sets `deploy_sync_paths: ["appdata/traefik"]`
+- **AND** `BOSUN_DEPLOY_SYNC_PATHS` is set to `["appdata/traefik", "appdata/gatus"]`
+- **THEN** the reconciler uses `["appdata/traefik", "appdata/gatus"]` from the env var
 
 #### Scenario: Env var overrides config file blocklist
 

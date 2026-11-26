@@ -410,21 +410,25 @@ The lock SHALL always be released via defer, even on panic.
 
 Rollback SHALL re-apply the backed-up previous-good compose files and SHALL NOT re-run the new (failing) compose file set. When a deploy fails or the critical-container health gate trips, the reconciler SHALL restore service state from the backup, not redeploy the release that just failed.
 
-An idempotent `docker compose up` that exits 0 against the failing files (because the unhealthy containers already exist) SHALL NOT be treated as a successful rollback. Rollback success SHALL be determined by re-applying the previous-good files, and the reconciler's logs and result status SHALL reflect the actual rollback outcome rather than a misleading "rollback attempted".
-
-When no backup is available (empty last backup path), the reconciler SHALL NOT attempt a backup-based rollback and SHALL log that no rollback target exists.
-
 #### Scenario: Health-gate failure restores previous-good files
 
 - **WHEN** compose up exits 0 but a critical container fails the health gate
 - **THEN** rollback re-applies the backed-up previous-good compose files
 - **AND** the failing new file set is not re-run as the rollback action
 
+### Requirement: Rollback Outcome Reporting
+
+An idempotent `docker compose up` that exits 0 against the failing files (because the unhealthy containers already exist) SHALL NOT be treated as a successful rollback. Rollback success SHALL be determined by re-applying the previous-good files, and the reconciler's logs and result status SHALL reflect the actual rollback outcome rather than a misleading "rollback attempted".
+
 #### Scenario: Idempotent re-up is not counted as rollback success
 
 - **WHEN** a rollback would re-run the new files and `docker compose up` exits 0 because the unhealthy containers already exist
 - **THEN** the reconciler does not report this as a successful rollback
 - **AND** the result status reflects that the previous-good state was restored or that rollback failed
+
+### Requirement: Rollback Without a Backup
+
+When no backup is available (empty last backup path), the reconciler SHALL NOT attempt a backup-based rollback and SHALL log that no rollback target exists.
 
 #### Scenario: No backup available skips rollback cleanly
 
