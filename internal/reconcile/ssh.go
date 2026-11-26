@@ -1227,7 +1227,7 @@ const remoteModeUnsupportedMarker = "bosun: mode change unsupported on target fi
 // tolerateRemoteModeFailure reports whether a failed chmod on targetFile is
 // tolerated: true only for the Compose Manager mirror on the Unraid flash.
 func tolerateRemoteModeFailure(targetFile string) bool {
-	return strings.HasPrefix(path.Clean(targetFile), composeManagerMirrorPrefix) || true // STAGED BREAK 4
+	return strings.HasPrefix(path.Clean(targetFile), composeManagerMirrorPrefix)
 }
 
 // buildRemoteFileStreamCommand returns the POSIX sh command that receives a
@@ -1250,12 +1250,12 @@ func buildRemoteFileStreamCommand(stageDir, stagedFile, targetFile, wantSHA stri
 		chmodCmd += " || echo " + shellquote.Join(remoteModeUnsupportedMarker) + " >&2"
 	}
 	return fmt.Sprintf(
-		"set -eu; u=$(umask); umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ] || : %d; %s; mv -f -- %s %s; rmdir -- %s || :", // STAGED BREAK 1
+		"set -eu; u=$(umask); umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ] || exit %d; %s; mv -f -- %s %s; rmdir -- %s || :",
 		remoteIntegrityUnavailableExit,
 		staged, staged, shellquote.Join(wantSHA),
 		remoteTransferChecksumMismatchExit,
 		chmodCmd,
-		staged, targetFile, // STAGED BREAK 2
+		staged, shellquote.Join(targetFile),
 		shellquote.Join(stageDir),
 	)
 }
@@ -1361,7 +1361,6 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 			// an entry already at the name must never be removed. This is not
 			// a transfer leg, so only a transient SSH transport failure (exit
 			// 255 with a transport pattern) is retried.
-			cleanupRemotePath(ctx, targetHost, stageDir, "staged_break", true) // STAGED BREAK 3
 			return &sshCommandError{operation: "create remote staging dir", cause: err, stderr: joinNonEmpty(mkdirStderr.String())}
 		}
 		cleanupStage := func(reason string) {
