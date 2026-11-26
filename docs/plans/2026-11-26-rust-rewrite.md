@@ -1,6 +1,7 @@
 # Plan: rewrite bosun in Rust
 
-- **Status:** Draft, for review. Nothing here is implemented.
+- **Status:** Draft, revised after review round 2 (2026-11-26). Nothing
+  here is implemented.
 - **Decision record:** [ADR-0015](../adr/0015-rust-rewrite.md) (Proposed)
 - **Baseline:** `main` at `82f19b7` (2026-11-26)
 - **Scope:** the `bosun` binary (`cmd/`, `internal/`) and the Go Dagger
@@ -13,16 +14,25 @@ Rewrite the Go binary in Rust behind a parity harness, then swap releases.
 The Go code stays the shipping product until the Rust binary passes every
 OpenSpec scenario and a two-week shadow run on the real Unraid host.
 
-Three Go-native pieces decide whether this is worth it. Each gets a spike
-with a pass/fail bar **before** any other porting starts:
+Phase 0 decides whether this is worth it, before any porting starts. It
+has four checks, each with a pass/fail bar:
 
-1. **User templates.** User repos hold `.tmpl` files written in Go
-   `text/template` + Sprig. Rust has no drop-in engine.
-2. **SOPS.** There is no maintained Rust SOPS library.
-3. **Git over SSH.** `go-git` plus `x/crypto/ssh` gives in-process host-key
-   control today. The Rust options are weaker or pull in C.
+1. **Footprint probe.** Measure the Go baseline and a minimal Rust daemon
+   skeleton. If Rust cannot clearly beat Go here, the footprint goal fails
+   on day 3, not week 20.
+2. **User templates.** User repos hold `.tmpl` files written in Go
+   `text/template` + Sprig. Rust has no drop-in engine, and bosun allows
+   all but 3 of Sprig's functions today.
+3. **SOPS.** There is no maintained Rust SOPS library.
+4. **Git.** `go-git` plus `x/crypto/ssh` gives in-process host-key and
+   redirect control today.
 
-If a spike fails its bar, stop and re-decide. Do not port around it.
+If a check fails its bar, stop and re-decide. Do not port around it.
+
+Phase 0 also lands three changes on the Go side that are worth having even
+if the rewrite never happens: age-only SOPS, a trimmed template function
+allowlist, and retiring Dagger. Everything after phase 0 is sunk cost if
+the port stalls (see [Risks](#risks)).
 
 ## Decisions from review (2026-11-26)
 
@@ -30,33 +40,78 @@ Cameron answered the first round of open questions:
 
 | Question | Answer | Effect on the plan |
 |----------|--------|--------------------|
-| Why Rust? | Safety, interop, a lower footprint, and Rust as the long-term language | Cutover measures these (below) |
-| Template approach | All Rust if we commit | Spike 1 is a pure-Rust engine. The WASM option is dropped |
+| Why Rust? | Safety, interop, a lower footprint, and Rust as the long-term language | See [Motivation, weighed](#motivation-weighed) |
+| Template approach | All Rust if we commit | Check 2 is a pure-Rust engine. The WASM option is dropped |
 | SOPS key types | Age only | Port is age-only. Other key types fail loudly |
 | Windows | Out of scope | Linux and macOS only. The `_windows.go` paths are not ported |
 
-**All Rust** means no Go code we own survives cutover: not in the binary,
-not in the build. Two consequences:
+**All Rust** means no Go code bosun owns survives cutover: not in the
+binary, not in the build. External tools stay allowed. `docker compose` and
+OpenSSH `ssh` are subprocesses today and are not Go code bosun owns. By the
+same rule, the `sops` and `git` binaries are allowed too (checks 3 and 4).
 
-- The Dagger module (`dagger/main.go`) is Go. Phase 6 either ports it to
-  the Dagger Rust SDK or retires Dagger. Retiring it needs an ADR that
-  supersedes [ADR-0003](../adr/0003-dagger-for-bosun.md) (Dagger).
-- External tools stay allowed. `docker compose` and OpenSSH `ssh` are
-  already subprocesses today and are not Go code bosun owns.
+**Dagger retires in phase 0**, not phase 6. The Dagger module
+(`dagger/main.go`) is Go, Dagger's Rust SDK trails its Go/TS/Python SDKs,
+and `.goreleaser.yaml` already has two `TODO`s where Dagger blocks binary
+signing and image builds. A new ADR supersedes
+[ADR-0003](../adr/0003-dagger-for-bosun.md) (Dagger) and moves the Go
+release to plain GitHub Actions. That fixes binary signing on Go today, and
+the Rust release reuses the same workflow.
 
-**What cutover measures**, against the last Go release on the same host:
+**Go-first spec changes.** Two OpenSpec changes land on the Go binary in
+phase 0, so Go and Rust agree before parity testing starts:
 
-- Daemon memory: idle RSS and peak RSS during a full reconcile.
-- Binary size and container image size.
-- `unsafe`: every bosun crate sets `#![forbid(unsafe_code)]`. Dependencies
-  with `unsafe` are listed in the release notes, reviewed via `cargo-geiger`.
+- `restrict-sops-to-age`: reject non-age key groups with a clear error.
+- `trim-template-funcs`: shrink `allowedSprigFuncs` from 208 names to the
+  set real templates use (see check 2). This is a breaking change for any
+  template using a dropped function, so it ships with a `bosun lint` rule
+  that names the function and the release that removed it.
+
+## Motivation, weighed
+
+Each stated reason, against what it actually buys over Go:
+
+| Reason | What Rust really adds | Verdict |
+|--------|----------------------|---------|
+| Safety | Go is already memory-safe (`CGO_ENABLED=0`). Rust adds compile-time data-race freedom (`Send`/`Sync`) and no nil. Against that, bosun would own a template engine and possibly a SOPS decryptor, which trades GC and nil bugs for parser and crypto-boundary bugs. `#![forbid(unsafe_code)]` covers bosun's code only; `tokio`, `hyper`, `bollard`, `gix`, and the crypto crates still use `unsafe` | Modest. Real for the daemon's concurrency rules (#793, #792). Offset by any parser or crypto code bosun takes on |
+| Footprint | Unknown until measured. The Go binary is ~1/3 of the image; the rest is `docker-cli`, `docker-cli-compose`, `git`, `openssh-client` | Unproven. Check 1 measures it with pass/fail targets |
+| Interop | bosun is a standalone CLI and daemon. Go and Rust interop identically over processes, HTTP, and files | None today. Counts only if another Rust project will import bosun crates. None is named |
+| Long-term language | Cameron prefers an all-Rust stack and sees Rust as the language to standardize on | **The main reason.** Legitimate, and weighed as a preference, not a technical win |
+
+Stated plainly: this rewrite is mostly a bet on standardizing on Rust. The
+footprint goal is the one technical reason that could pay for it, which is
+why it is measured first.
+
+### Footprint baseline and targets
+
+Go baseline, `v0.49.10`, measured 2026-11-26:
+
+| Measure | Go baseline | Where measured | Rust target |
+|---------|------------:|----------------|-------------|
+| Binary, `linux_amd64`, stripped | 57.2 MiB (60.0 MB) | Release asset, extracted | ≤ 25 MiB |
+| Release archive, `linux_amd64` | 18.9 MiB | Release asset | ≤ 10 MiB |
+| Container image, `linux/amd64`, compressed | 58.2 MiB | GHCR manifest layer sizes | Smaller than Go. The binary layer is 19.0 MiB of the 58.2; the rest is `docker-cli`, compose, `git`, `ssh` |
+| Daemon idle RSS | 43.7 MiB | Cloud sandbox: no Docker, failed initial clone, HTTP off | ≤ 50% of the host baseline |
+| Daemon idle RSS on the Unraid host | **not yet measured** | Phase 0, check 1 | ≤ 50% of Go |
+| Daemon peak RSS during a full reconcile | **not yet measured** | Phase 0, check 1, on the host | ≤ 60% of Go |
+
+The targets are proposals for Cameron to accept or change. The sandbox RSS
+is a lower bound; the host number is the one that counts.
+
+**Check 1 (footprint probe)** builds a Rust daemon skeleton that links the
+real dependency set (`tokio`, `axum`, `bollard`, `reqwest` + `rustls`,
+`gix`, `tracing`, `sentry`, `opentelemetry`) and idles with the same
+listeners. If its binary size or idle RSS misses the targets, the footprint
+goal is dead, and the decision falls back to the preference alone.
+
+### Other cutover measures
+
+- `unsafe`: every bosun crate sets `#![forbid(unsafe_code)]`, except at
+  most one small `bosun-sys` crate for OS calls no safe crate covers (see
+  [OS security primitives](#os-security-primitives)). Dependency `unsafe`
+  is tracked with `cargo-geiger`, not claimed away.
 - Supply chain: `cargo-deny` (licenses, advisories, duplicate crates) and
   `cargo-audit` in CI.
-
-**Age-only SOPS lands on Go first.** An OpenSpec change (working name
-`restrict-sops-to-age`) makes the Go binary reject non-age key groups with a
-clear error. Then Go and Rust agree, and the parity harness has no known
-diff to carry.
 
 ## What we are porting
 
@@ -88,9 +143,9 @@ when each one matches the Go binary byte for byte or by spec.
 | CLI commands, flags, exit codes, `--help` | `internal/cmd`, `docs/cli-reference.md` | Golden diff of both binaries |
 | `bosun.yaml` schema and precedence | `internal/config` | Shared fixtures, both binaries |
 | 71 `BOSUN_*` env vars, legacy aliases, defaults | `AGENTS.md` table | Generated test per row |
-| Template language for user `.tmpl` files | `internal/reconcile/template*.go` | Differential render (Spike 1) |
+| Template language for user `.tmpl` files | `internal/reconcile/template*.go` | Differential render (check 2) |
 | Manifest/provision render output | `internal/manifest` | Golden diff on `manifest/`, `examples/` |
-| SOPS file formats: YAML, JSON, dotenv, INI | `internal/reconcile/sops.go` | Vectors from the real `sops` binary (Spike 2) |
+| SOPS file formats: YAML, JSON, dotenv, INI | `internal/reconcile/sops.go` | Vectors from the real `sops` binary (check 3) |
 | On-disk state: `deploy-state.json`, snapshots, backups | `reconcile/state.go`, `snapshot` | Rust reads Go files **and** Go reads Rust files |
 | Socket and HTTP API, webhook signatures, status codes | `internal/daemon` | Black-box HTTP suite against both |
 | Metric names, log JSON field names | `daemon`, `log` | Scrape and log diff |
@@ -106,12 +161,14 @@ Any intended behavior change (for example, age-only SOPS) is a spec
 change. It needs an `openspec/changes/<id>/` proposal first, per
 `AGENTS.md` § Spec Before Code.
 
-## Spikes (phase 0)
+## Phase 0 checks
 
-Each spike is a throwaway branch with a written result in this file.
-Budget: about 3 working days each, run in parallel.
+Each check is a throwaway branch with a written result in this file. Check
+1 (footprint) is above. Checks 3 and 4 take about 3 working days each.
+Check 2 takes about 2 weeks, because it includes the usage survey and the
+Go-first trim.
 
-### Spike 1: Go template compatibility
+### Check 2: Go template compatibility
 
 User templates use Go syntax, Sprig functions, and bosun's own functions
 (`include` and `fromJsonFile` in reconcile; `include`, `nindent`, and
@@ -122,50 +179,85 @@ Options:
 
 | Option | Keeps user contract | Cost |
 |--------|--------------------|------|
-| **A. Go-compatible engine in Rust** (extend the `gtmpl` crate or write one) | Yes | 3–5k lines: pipelines, `range`/`with`/`else if`, `define`/`template`/`block`, `{{-` trim, sorted map `range`, Go truthiness, plus the Sprig subset bosun allows |
+| **A. Go-compatible engine in Rust** (write one; `gtmpl` is largely dormant) | Yes | See scope below |
 | B. Switch to `minijinja` and ship a converter | No. Breaks every user repo and [ADR-0011](../adr/0011-helm-alignment.md) (Helm alignment) | Converter plus a migration window |
 
 **Chosen: A** (all Rust). If A misses the bar, the choice is B (a
 breaking change for every user repo) or staying on Go. That goes back to
 Cameron.
 
+**Scope is larger than a spike.** `allowedSprigFuncs` in
+`internal/reconcile/template_funcs.go` is every Sprig v3.3.0 function
+except `env`, `expandenv`, and `getHostByName`: 208 names. That includes
+X.509 generation (`genCA`, `genSignedCert`), password and crypto helpers
+(`bcrypt`, `htpasswd`, `encryptAES`, `derivePassword`), Go reference-time
+date layouts (`date`, `dateInZone`, `toDate`), reflection (`typeOf`,
+`kindIs`), and Masterminds `semverCompare`, which differs from the Rust
+`semver` crate. On top of that: `missingkey=error` (manifest templating),
+Go `printf` verbs, `define`/`template`/`block`, pipelines, `{{-` trim,
+sorted map `range`, and Go truthiness.
+
+So check 2 has three steps:
+
+1. **Survey** which functions real templates use: `examples/`,
+   `manifest/`, test fixtures, and Cameron's live infra repo. The checked-in
+   corpus uses almost none (`indent`, plus bosun's own `include`).
+2. **Trim on Go first** through `trim-template-funcs`: keep the used set
+   plus a small, common core (strings, lists, dicts, defaults, encoding).
+   Target: 20–40 functions. Anything else is a spec change to add back.
+3. **Build the core engine** (parse, execute, trim, pipelines, the trimmed
+   functions) far enough to render the corpus.
+
+Budget for the full engine after check 2: 4–6 weeks in phase 2, not 3
+days. Without the trim, the engine is a multi-month project of its own and
+check 2 fails.
+
 **Pass bar:** byte-identical output against Go on every template in
 `examples/`, `manifest/`, the test fixtures, and Cameron's live infra repo.
-Then 24 hours of differential fuzzing (same template + data into both
+Then, once the engine is complete in phase 2, 24 hours of differential fuzzing (same template + data into both
 engines) with zero diffs, or only diffs we choose to accept and spec.
 
-### Spike 2: SOPS decryption
+### Check 3: SOPS decryption
 
-bosun calls `decrypt.File` and validates an age identity first. The Rust
-port would implement SOPS decrypt directly: age-wrapped data key,
-`ENC[AES256_GCM,...]` values with the key path as AAD, and MAC check. The
-`age` and `aes-gcm` crates are mature.
+bosun calls `decrypt.File` and validates an age identity first. Scope is
+**age only** (Cameron, 2026-11-26). PGP, AWS/GCP KMS, Azure Key Vault, and
+HashiCorp Vault key groups fail with a clear error. The
+`restrict-sops-to-age` spec change lands on Go first.
 
-Scope: **age only** (Cameron, 2026-11-26). PGP, AWS/GCP KMS, Azure Key
-Vault, and HashiCorp Vault key groups fail with a clear error. The
-`restrict-sops-to-age` spec change lands on Go first (see Decisions).
+| Option | What bosun owns | Cost |
+|--------|-----------------|------|
+| **A. Shell out to a pinned `sops` binary** (`sops decrypt --output-type json`) | Error mapping from exit code and stderr, a version pin, and the age identity check that already exists | `sops` becomes a runtime dependency: added to the image, checked by `bosun doctor`, and required on bare-metal installs. The `sops` binary is itself a large Go binary, so it eats into the image-size goal. Plaintext crosses a pipe to a child process, which [ADR-0010](../adr/0010-go-rewrite.md) moved away from |
+| B. Own decryptor on `age` + `aes-gcm` | Age-wrapped data key, `ENC[AES256_GCM,...]` values with the key path as AAD, MAC check, 4 formats, `unencrypted_suffix`, `mac_only_encrypted`, and `sops.go`'s non-leaking error boundary | A high-liability crypto subsystem to own forever |
 
-**Pass bar:** decrypts every vector produced by the real `sops` binary for
+**Lean: A.** It follows the same rule that allows `ssh` and `docker
+compose`, and it keeps crypto in upstream's hands. B stays possible later,
+behind the same tests, if dropping the runtime dependency becomes worth it.
+This reverses ADR-0010's "no sops CLI" choice, so it needs Cameron's
+explicit yes.
+
+**Pass bar (either option):** decrypts every vector produced by the real `sops` binary for
 all four formats, including nested keys, `unencrypted_suffix`, and
 `mac_only_encrypted`. Fails closed with the same error classes as
 `sops.go` (`ErrSOPSIntegrity`, `ErrSOPSKeyUnavailable`, and the others) on
-tampered values, wrong keys, and truncated files.
+tampered values, wrong keys, and truncated files. No decrypted value,
+data key, or MAC appears in an error, log line, or stderr passthrough.
 
-### Spike 3: Git transport
+### Check 4: Git transport
 
 Today: in-process clone/fetch, HTTPS Basic auth with redirect-downgrade
 refusal, and SSH with fail-closed `known_hosts` (PR #712).
 
-| Option | HTTPS | SSH host-key control | Cost |
-|--------|-------|----------------------|------|
-| **`gix` (gitoxide)** + system `ssh` | Native, pure Rust | Pass `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=...`, the same way remote deploy already shells out in `reconcile/ssh.go` | The image already ships `openssh-client` |
-| `git2` (libgit2 + libssh2) | Yes | In-process callbacks | C deps; static musl builds get harder |
-| `gix` + `russh` custom transport | Native | In-process | Most code to own |
+| Option | HTTPS redirect and credential control | SSH host-key control | Cost |
+|--------|---------------------------------------|----------------------|------|
+| `gix` (gitoxide) + system `ssh` | In-process, but whether `gix`'s HTTP transport can enforce "same-origin HTTPS only, never forward Basic auth cross-origin" is **unverified** | `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=...`, as deploy already does in `reconcile/ssh.go` | Pure Rust; typed diff-base and shallow-fetch logic |
+| `git` CLI + system `ssh` | Through `git` config (`http.followRedirects`, credential helper or `GIT_ASKPASS`, never userinfo in URLs). Cross-origin behavior also **unverified** | Same `ssh` flags via `GIT_SSH_COMMAND` | Least code. Output parsing for diffs. `git` is already in the image |
+| `git2` (libgit2 + libssh2) | In-process callbacks | In-process callbacks | C deps; static musl builds get harder |
 
-**Lean: `gix` + system `ssh`.** It matches how deploy already works and
-keeps the binary pure Rust.
-
-**Pass bar:** the existing Git trust scenarios in
+Once `gix` shells out to `ssh`, its edge over the `git` CLI is in-process
+HTTPS control and typed results, not SSH. If check 4 cannot prove that
+`gix` enforces the redirect rule, the `git` CLI wins on less code. Check 4
+runs the same pass bar against both and picks the one that passes with less
+owned code. the existing Git trust scenarios in
 `openspec/specs/reconcile/spec.md` pass. That covers missing or malformed
 `known_hosts`, agent vs. key fallback, the insecure opt-out, HTTPS
 credential pairing, and cross-origin redirect refusal. Shallow fetch with
@@ -178,10 +270,10 @@ credential pairing, and cross-origin redirect refusal. Shallow fetch with
 | `cobra` | `clap` (derive) + `clap_complete` | Low |
 | `moby/moby/client` | `bollard` | Low. Keep a `DockerApi` trait so tests mock it, as today |
 | `docker compose` exec | `tokio::process` | Low. Already a subprocess |
-| `go-git` + `x/crypto/ssh` | `gix` + system `ssh` | High (Spike 3) |
-| `getsops/sops` | own crate on `age` + `aes-gcm` | High (Spike 2) |
-| `text/template` + `sprig` | own engine or `gtmpl` | Highest (Spike 1) |
-| `yaml.v3` | `serde_yaml` is unmaintained. Pick a fork (`serde_norway`) or `saphyr` in phase 1 | Medium. `toYaml` and merge output must stay byte-stable |
+| `go-git` + `x/crypto/ssh` | `gix` or `git` CLI, plus system `ssh` | High (check 4) |
+| `getsops/sops` | pinned `sops` binary, or own crate on `age` + `aes-gcm` | High (check 3) |
+| `text/template` + `sprig` | own engine | Highest (check 2) |
+| `yaml.v3` | A parser (`saphyr` or a maintained `serde_yaml` fork such as `serde_norway`) **plus a small owned emitter** | Medium-high. `serde_norway` drops comments and anchors and orders keys differently from `yaml.v3`; `saphyr` is a lower-level parser, not a serde drop-in. Byte-stable `toYaml` and deep-merge output need bosun's own emitter |
 | `doublestar` | `globset` or `wax` | Medium. `**` edge cases differ. Differential test it |
 | `zerolog` | `tracing` + `tracing-subscriber` JSON | Low. Keep field names |
 | `fatih/color` | `anstream` / `owo-colors` | Low |
@@ -192,11 +284,32 @@ credential pairing, and cross-origin redirect refusal. Shallow fetch with
 | `client_golang` | `prometheus-client` | Low. Metric names frozen |
 | `sentry-go` | `sentry` | Low |
 | OpenTelemetry | `opentelemetry` + `opentelemetry-otlp` (HTTP) | Medium. Crate API churns |
-| `shellquote`, `uuid`, `semver` | `shlex`, `uuid`, `semver` | Low |
+| `x/term` (TTY checks, prompts in `init`, color in `log`) | `std::io::IsTerminal` + `rpassword` or `dialoguer` | Low |
+| `shellquote`, `uuid`, `Masterminds/semver` | `shlex`, `uuid`, `semver` | Low. Only `semver` parsing; `semverCompare` in templates is check 2's problem |
+| OTLP protobuf | `opentelemetry-proto` (via `opentelemetry-otlp`) | Low |
 
 Platforms: `x86_64` and `aarch64` for Linux (musl, static) and macOS.
 Windows is out of scope (Cameron, 2026-11-26). The Go `_windows.go` files
 are not ported.
+
+## OS security primitives
+
+`internal/reconcile` relies on OS-level controls that have no line in a
+dependency list. Each must survive the port, on Linux musl and macOS, with
+its existing tests ported first.
+
+| Control | Go today | Rust mapping | Safe? |
+|---------|----------|--------------|-------|
+| Pinned-directory confinement and symlink refusal (TOCTOU) | `*os.Root` in `template.go` (`sourceRoot`, `includeRoot`), `open_pinned_other.go`; tests `deploy_pinned_root_test.go`, `template_include_root_unix_test.go`, `template_symlink_refusal_test.go`, `lock_confinement_errors_unix_test.go` | `cap-std` `Dir` (openat-based, refuses escapes) | Safe API. Verify symlink-refusal semantics match `os.Root` |
+| No-clobber atomic rename, Linux | `renameat2(RENAME_NOREPLACE)` in `rename_noreplace_linux.go` | `rustix::fs::renameat_with(.., RenameFlags::NOREPLACE)` | Safe API |
+| No-clobber atomic rename, macOS | `renamex_np` / `renameatx_np` with `RENAME_EXCL` in `rename_noreplace_darwin.go` | Verify `rustix` coverage. If missing, the one `bosun-sys` crate wraps it | Possibly `unsafe`, isolated |
+| Process-group cancellation of `docker compose` | `Setpgid`, then `kill(-pgid, SIGTERM)` then `SIGKILL` in `compose_cancel_unix.go` | `std::os::unix::process::CommandExt::process_group(0)` + `rustix::process::kill_process_group` | Safe API |
+| Transfer file identity (dev, inode) | `syscall.Stat_t` in `transfer_identity_unix.go` | `std::os::unix::fs::MetadataExt` | Safe API |
+| Unix socket peer UID | `x/sys` peer credentials | `tokio::net::UnixStream::peer_cred` | Safe API |
+
+Phase 1 verifies each row on both platforms before phase 3 depends on it.
+If any row needs `unsafe`, it lives in `bosun-sys` only, with its own tests,
+and every other crate keeps `#![forbid(unsafe_code)]`.
 
 ## Layout
 
@@ -207,8 +320,9 @@ Cargo.toml              # workspace
 crates/
   bosun/                # bin: clap commands (internal/cmd)
   bosun-core/           # config, ui, log, lock, fileutil, retry, deadline
-  bosun-template/       # Go-compatible template engine (Spike 1)
-  bosun-sops/           # SOPS decrypt (Spike 2)
+  bosun-template/       # Go-compatible template engine (check 2)
+  bosun-sops/           # SOPS decrypt or sops CLI wrapper (check 3)
+  bosun-sys/            # only if needed: the OS calls no safe crate covers
   bosun-manifest/       # manifest render, deep merge
   bosun-reconcile/      # engine, git, ssh, docker, compose, backup, hooks
   bosun-daemon/         # HTTP, socket, webhooks, drift loop
@@ -223,7 +337,7 @@ test vectors (template, sops). Everything async runs on `tokio`.
 
 ```mermaid
 flowchart LR
-  P0[0 Spikes<br/>template, sops, git] --> G{All pass?}
+  P0[0 Checks + Go-first changes<br/>footprint, template, sops, git] --> G{All pass?}
   G -- no --> R[Re-decide]
   G -- yes --> P1[1 Foundations<br/>CLI skeleton, config, log, ui]
   P1 --> P2[2 Leaf crates<br/>manifest, fileutil, alert, snapshot]
@@ -237,21 +351,23 @@ flowchart LR
 
 Each phase ends with its parity checks green in CI. Estimates assume
 agent-driven implementation with Cameron reviewing. Confidence is low until
-the spikes land.
+phase 0 lands.
 
 | # | Phase | Exit check | Estimate |
 |---|-------|-----------|----------|
-| 0 | Spikes | Three pass bars above | 1 week (parallel) |
-| 1 | Foundations: workspace, `clap` tree matching every command and flag, config load, env table, `ui`, `log`, lock | `--help` and config golden diffs match | 1 week |
-| 2 | Leaf crates: manifest render, `fileutil`, snapshot, alert providers, tunnel | Manifest golden diffs; alert payload snapshots match | 1–2 weeks |
-| 3 | Reconcile engine: the 9-step pipeline, multi-target, backup/rollback, health gate, restart breaker, hooks, drift | All `reconcile` and `reconcile-fuse-hooks` scenarios pass; state files round-trip with Go | 3–4 weeks |
-| 4 | Daemon: socket (0660 staged publish, peer UID), webhooks (HMAC, 1 MiB cap, fail-closed), single-flight with counted coalescing, drift loop, self-heal | Black-box HTTP suite passes against both binaries | 2 weeks |
-| 5 | Remaining commands and services: `update`, `doctor`, `status`, `crew`, `yacht`, `mayday`, `migrate`, Sentry, OTel, metrics | Every CLI golden and the `self-update`/`observability` scenarios pass | 1–2 weeks |
-| 6 | Release: goreleaser Rust builder (or `cargo-zigbuild`), Cosign, same asset names, same image. Port the Dagger module to Rust or retire Dagger | A pre-release tag self-updates from the last Go release in a test container | 3–5 days |
+| 0 | Four checks; `restrict-sops-to-age`, `trim-template-funcs`, and Dagger retirement land on Go | Four pass bars above; Go release green on plain Actions | 3 weeks |
+| 1 | Foundations: workspace, `clap` tree matching every command and flag, config load, env table, `ui`, `log`, lock, OS primitives verified | `--help` and config golden diffs match; OS primitive tests pass on Linux and macOS | 2 weeks |
+| 2 | Leaf crates: template engine, YAML emitter, manifest render, `fileutil`, snapshot, alert providers, tunnel | Template differential fuzzing clean; manifest golden diffs; alert payload snapshots match | 6–8 weeks |
+| 3 | Reconcile engine: the 9-step pipeline, multi-target, backup/rollback, health gate, restart breaker, hooks, drift | All `reconcile` and `reconcile-fuse-hooks` scenarios pass; state files round-trip with Go | 6–8 weeks |
+| 4 | Daemon: socket (0660 staged publish, peer UID), webhooks (HMAC, 1 MiB cap, fail-closed), single-flight with counted coalescing, drift loop, self-heal | Black-box HTTP suite passes against both binaries | 3–4 weeks |
+| 5 | Remaining commands and services: `update`, `doctor`, `status`, `crew`, `yacht`, `mayday`, `migrate`, Sentry, OTel, metrics | Every CLI golden and the `self-update`/`observability` scenarios pass | 2–3 weeks |
+| 6 | Release: Rust build in the Actions release workflow from phase 0 (GoReleaser OSS `builder: rust`, which uses `cargo-zigbuild`), Cosign on binaries and image, same asset names, same image | A pre-release tag self-updates from the last Go release in a test container | 1 week |
 | 7 | Shadow run on the Unraid host (below) | Two weeks, zero unexplained diffs | 2 weeks elapsed |
 | 8 | Cutover and Go removal | One clean release cycle on Rust | 1–2 weeks elapsed |
 
-Rough total: **12–16 weeks** of calendar time.
+Rough total: **26–33 weeks** of calendar time, about 6–8 months. The first
+estimate (12–16 weeks) left 8–12 weeks for 51.6k lines, 493 scenarios, a
+template engine, and a moving `main`. That was optimistic by about 2x.
 
 ## Tests
 
@@ -286,9 +402,12 @@ measured cold build. Agents must not create per-worktree target dirs.
 These are subtle in Go today and easy to lose in a port. Each gets a
 dedicated test before phase 4 closes.
 
-- `reconcileMu` is never held across I/O (#793). In Rust: hold a
-  `tokio::sync::Mutex` guard only around state changes, never across
-  `.await` on I/O.
+- `reconcileMu` is never held across I/O (#793). In Rust: use
+  `std::sync::Mutex` (or `parking_lot::Mutex` without `send_guard`), not
+  `tokio::sync::Mutex`. A `tokio` guard is `Send`, so the compiler allows it
+  across `.await`. A `std` guard is `!Send`, so a future that holds it
+  across `.await` cannot be passed to `tokio::spawn`, and the build fails.
+  Back it with `clippy::await_holding_lock` set to `deny`.
 - Triggers during a run form one follow-up batch, with sorted distinct
   sources and sticky `force`.
 - Async reconciles are daemon-owned: they get shutdown cancellation, not
@@ -331,24 +450,29 @@ dedicated test before phase 4 closes.
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
-| Template engine diverges in a rare case | User configs render wrong, silently | Spike 1 bar plus ongoing differential fuzzing in CI |
+| Template engine diverges in a rare case | User configs render wrong, silently | Check 2 bar plus ongoing differential fuzzing in CI |
 | SOPS edge case decrypts wrong or fails open | Secret exposure or broken deploys | Fail-closed error classes; vectors from real `sops`; tamper tests |
 | SSH trust regression | MITM on Git or deploy | Reuse the #712 scenarios; system `ssh` with strict flags |
-| Port stalls mid-way | Two half-products | Go ships until cutover; each phase is useful on its own |
+| Port stalls mid-way | Sunk cost. A rewrite has no useful partial artifact: stalling in phase 3 leaves ~30k lines of unshipped Rust next to Go, and it gets deleted | Front-load what pays off anyway (the three Go-first changes in phase 0). Hold a go/no-go review at the end of phases 0, 2, and 3, and name the stop condition before each one starts |
 | `main` keeps moving | Parity never converges | Spec-scenario check; freeze large features during phase 3 |
 | Rust build disk use | Agent gate rejects work | Cargo gate variant in phase 1 |
-| Dagger Rust SDK too immature | Release pipeline stuck on Go | Retire Dagger for plain Actions + goreleaser, with an ADR |
+| Template trim breaks a user template | A deploy fails at render time | `bosun lint` rule names the removed function; trim lands on Go months before cutover |
+| `sops` CLI drift (if check 3 picks option A) | Error mapping breaks on an upgrade | Pin the version in the image and in `bosun doctor`; test against the pinned version |
 
 ## Open decisions
 
 The first round is answered (see [Decisions](#decisions-from-review-2026-11-26)).
 These are decided inside a phase, not up front:
 
-1. **YAML crate** (phase 1): a maintained `serde_yaml` fork or `saphyr`,
-   picked by byte-stable `toYaml` output against Go.
-2. **Glob crate** (phase 1): `globset` or `wax`, picked by differential
+1. **Footprint targets** (now): accept or change the targets in
+   [Footprint baseline and targets](#footprint-baseline-and-targets).
+2. **SOPS** (check 3): approve shelling out to `sops`, which reverses
+   ADR-0010's "no sops CLI" choice.
+3. **Git** (check 4): `gix` or the `git` CLI, picked by the pass bar.
+4. **YAML parser** (phase 1): `saphyr` or a `serde_yaml` fork, under an
+   owned emitter.
+5. **Glob crate** (phase 1): `globset` or `wax`, picked by differential
    tests against `doublestar`.
-3. **Dagger** (phase 6): port to the Rust SDK or retire it.
 
 ## Not in scope
 
