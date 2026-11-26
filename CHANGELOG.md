@@ -40,6 +40,20 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.49.8](https://github.com/cameronsjo/bosun/compare/v0.49.7...v0.49.8) (2026-11-26)
+
+
+### Bug Fixes
+
+* **daemon:** drift alert state, poll interval, readiness ([#879](https://github.com/cameronsjo/bosun/issues/879)) ([17634ef](https://github.com/cameronsjo/bosun/commit/17634efc32b48fbb33b13e6c5136d5a147d86f71))
+
+## [0.49.7](https://github.com/cameronsjo/bosun/compare/v0.49.6...v0.49.7) (2026-11-26)
+
+
+### Bug Fixes
+
+* **cmd:** wire Cloudflare tunnel config and repair create templates ([#881](https://github.com/cameronsjo/bosun/issues/881)) ([9d9297e](https://github.com/cameronsjo/bosun/commit/9d9297e70929dc57e5c1c243004cf9c3bc12b73d))
+
 ## [0.49.6](https://github.com/cameronsjo/bosun/compare/v0.49.5...v0.49.6) (2026-11-25)
 
 

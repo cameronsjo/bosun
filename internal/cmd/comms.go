@@ -86,15 +86,17 @@ func runRadioStatus(cmd *cobra.Command, args []string) {
 	// Load configuration to get tunnel provider
 	cfg, err := config.Load()
 	var providerName string
+	var providerCfg tunnel.ProviderConfig
 	if err != nil {
 		// Default to Tailscale if config not available
 		providerName = "tailscale"
 	} else {
 		providerName = cfg.TunnelProvider()
+		providerCfg = tunnelProviderConfig(cfg)
 	}
 
-	// Create the tunnel provider
-	provider, err := tunnel.NewProvider(providerName)
+	// Create the tunnel provider with the settings from bosun.yaml
+	provider, err := tunnel.NewProviderWithConfig(providerName, providerCfg)
 	if err != nil {
 		if notInstalled, ok := err.(tunnel.ErrNotInstalled); ok {
 			ui.Warning("%s", notInstalled.Error())
@@ -118,6 +120,17 @@ func runRadioStatus(cmd *cobra.Command, args []string) {
 
 	// Display status based on provider type
 	displayTunnelStatus(status)
+}
+
+// tunnelProviderConfig carries the tunnel section of bosun.yaml to the tunnel
+// package, which does not import the project config.
+func tunnelProviderConfig(cfg *config.Config) tunnel.ProviderConfig {
+	tunnelCfg := cfg.GetTunnelConfig()
+	return tunnel.ProviderConfig{
+		TunnelName:     tunnelCfg.TunnelName,
+		Hostname:       tunnelCfg.Hostname,
+		HealthEndpoint: tunnelCfg.HealthEndpoint,
+	}
 }
 
 // displayInstallInstructions shows installation instructions for the tunnel provider.

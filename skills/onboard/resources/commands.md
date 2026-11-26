@@ -491,6 +491,8 @@ bosun radio test               # Test webhook endpoint (GET /health)
 bosun radio status             # Check Tailscale/tunnel connectivity, peers, network info
 ```
 
+For a Cloudflare tunnel, `radio status` uses `tunnel_name`, `hostname` and `health_endpoint` from the `tunnel:` section of `bosun.yaml`.
+
 ---
 
 ## Emergency Commands

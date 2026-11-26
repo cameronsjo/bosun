@@ -112,13 +112,38 @@ func (e ErrNotConfigured) Error() string {
 	return fmt.Sprintf("%s is not configured", e.Provider)
 }
 
-// NewProvider creates a new tunnel provider based on the provider type.
+// ProviderConfig carries the provider-specific settings from the project
+// config (the tunnel section of bosun.yaml). Only Cloudflare reads them today;
+// Tailscale discovers its state from the local daemon.
+type ProviderConfig struct {
+	// TunnelName is the name of the Cloudflare tunnel.
+	TunnelName string
+
+	// Hostname is the tunnel hostname (e.g., "myhost.example.com").
+	Hostname string
+
+	// HealthEndpoint is the URL checked for tunnel health.
+	HealthEndpoint string
+}
+
+// NewProvider creates a new tunnel provider based on the provider type, with
+// no provider-specific settings.
 func NewProvider(providerType string) (Provider, error) {
+	return NewProviderWithConfig(providerType, ProviderConfig{})
+}
+
+// NewProviderWithConfig creates a new tunnel provider and applies the
+// provider-specific settings from the project config.
+func NewProviderWithConfig(providerType string, cfg ProviderConfig) (Provider, error) {
 	switch ProviderType(providerType) {
 	case ProviderTailscale:
 		return NewTailscale()
 	case ProviderCloudflare:
-		return NewCloudflare()
+		return NewCloudflareWithConfig(CloudflareConfig{
+			TunnelName:     cfg.TunnelName,
+			Hostname:       cfg.Hostname,
+			HealthEndpoint: cfg.HealthEndpoint,
+		})
 	default:
 		return nil, fmt.Errorf("unknown tunnel provider: %s", providerType)
 	}
