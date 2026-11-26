@@ -1,15 +1,18 @@
 package reconcile
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"filippo.io/age/armor"
 	"github.com/cameronsjo/bosun/internal/log"
 	sopslib "github.com/getsops/sops/v3"
 	sopsage "github.com/getsops/sops/v3/age"
@@ -112,6 +115,10 @@ func inferSOPSFormat(path string) (sopsFileFormat, error) {
 //  2. SOPS_AGE_KEY_FILE environment variable
 //  3. Default location: ~/.config/sops/age/keys.txt
 //
+// A SOPS_AGE_KEY value that SOPS would reject fails here, even when a valid
+// key file is also configured. A value that holds no identity at all (blank
+// or comments only) falls through to the file sources, as it does in SOPS.
+//
 // Returns nil if a key is found, or an error with setup instructions if not.
 func (s *SOPSOps) CheckAgeKey() error {
 	logger := log.Component(log.ComponentSOPS)
@@ -120,10 +127,33 @@ func (s *SOPSOps) CheckAgeKey() error {
 		readIdentityFile = readRegularNonEmptyFile
 	}
 
-	// Check SOPS_AGE_KEY environment variable
-	if key := os.Getenv("SOPS_AGE_KEY"); key != "" {
+	// Check SOPS_AGE_KEY environment variable. Its content is judged with the
+	// rules SOPS itself applies (ClassifyInlineAgeKey). The value and any parse
+	// error are never logged or returned: either can carry key material.
+	switch state := ClassifyInlineAgeKey(os.Getenv("SOPS_AGE_KEY")); state {
+	case InlineAgeKeyValid:
 		logger.Debug().Str("source", "SOPS_AGE_KEY").Msg("Age key found via environment variable")
 		return nil
+	case InlineAgeKeyEncryptedArmored, InlineAgeKeyEncryptedBinary:
+		format := "armored"
+		if state == InlineAgeKeyEncryptedBinary {
+			format = "age-encryption"
+		}
+		logger.Warn().
+			Str("source", "SOPS_AGE_KEY").
+			Str("key_format", format).
+			Msg("SOPS_AGE_KEY holds a passphrase-encrypted Age identity; it cannot be validated without the passphrase, and a headless daemon cannot prompt for it")
+		return nil
+	case InlineAgeKeyInvalid:
+		return fmt.Errorf(`%w: SOPS_AGE_KEY does not contain a parseable Age identity.
+
+To fix:
+  1. Set SOPS_AGE_KEY to one or more Age identities (AGE-SECRET-KEY-1...), separated by whitespace or newlines; lines starting with # are comments
+  2. Or unset SOPS_AGE_KEY and use SOPS_AGE_KEY_FILE=/path/to/key`, ErrAgeKeyNotFound)
+	case InlineAgeKeyEmpty:
+		// No identity and no parse error: SOPS treats this the same as an unset
+		// variable and keeps loading the file sources, so Bosun does too.
+		logger.Debug().Str("source", "SOPS_AGE_KEY").Msg("SOPS_AGE_KEY holds no Age identity; checking key files")
 	}
 
 	// Check SOPS_AGE_KEY_FILE environment variable
@@ -167,6 +197,99 @@ func validateAgeIdentityFile(path string, readFile regularNonEmptyFileReader) er
 		return errors.New("does not contain a parseable Age identity")
 	}
 	return nil
+}
+
+// InlineAgeKeyState is the verdict ClassifyInlineAgeKey gives a SOPS_AGE_KEY
+// value. It carries no part of the value, so it is safe to log or display.
+type InlineAgeKeyState int
+
+const (
+	// InlineAgeKeyEmpty means the value yields no identity and no parse error
+	// (unset, whitespace, or comment lines only). SOPS treats this as no key
+	// in the variable and still loads its file sources.
+	InlineAgeKeyEmpty InlineAgeKeyState = iota
+	// InlineAgeKeyValid means every word parsed as exactly one Age identity.
+	InlineAgeKeyValid
+	// InlineAgeKeyEncryptedArmored means the value is an ASCII-armored,
+	// passphrase-encrypted identity file. It cannot be checked without the
+	// passphrase.
+	InlineAgeKeyEncryptedArmored
+	// InlineAgeKeyEncryptedBinary means the value is a binary
+	// ("age-encryption.org/v1"), passphrase-encrypted identity file.
+	InlineAgeKeyEncryptedBinary
+	// InlineAgeKeyInvalid means SOPS would fail to parse the value.
+	InlineAgeKeyInvalid
+)
+
+// ClassifyInlineAgeKey judges a SOPS_AGE_KEY value with the rules the SOPS
+// age key source (v3.13.3) applies to that variable:
+//   - a value whose raw bytes begin with "age-encryption" or "-----BEGIN AGE"
+//     is a passphrase-encrypted identity file. It is read the way SOPS reads
+//     it (age/encrypted_keys.go): an armored value through the age armor
+//     decoder, either kind bounded at 16 MiB. A read error or a value that
+//     reaches the bound is invalid; the passphrase itself is not checked;
+//   - otherwise the value is read line by line, a raw line that is empty or
+//     starts with "#" is skipped, and every other line is split on whitespace;
+//   - every word must parse as exactly one identity. A word starting with "#"
+//     is not a comment and fails, as it does in SOPS.
+//
+// One deliberate difference: SOPS ignores a line scanner error (a line over
+// 64 KiB) and keeps what it read so far; this reports the value invalid,
+// because such a line is never a valid identity.
+//
+// Parse errors are discarded on purpose: the age parser's messages can carry
+// bytes of the key, so neither the error nor the value may reach a log, an
+// error string, or telemetry.
+func ClassifyInlineAgeKey(value string) InlineAgeKeyState {
+	switch {
+	case strings.HasPrefix(value, "age-encryption"):
+		if !encryptedIdentityReadable(strings.NewReader(value)) {
+			return InlineAgeKeyInvalid
+		}
+		return InlineAgeKeyEncryptedBinary
+	case strings.HasPrefix(value, "-----BEGIN AGE"):
+		if !encryptedIdentityReadable(armor.NewReader(strings.NewReader(value))) {
+			return InlineAgeKeyInvalid
+		}
+		return InlineAgeKeyEncryptedArmored
+	}
+
+	identities := 0
+	scanner := bufio.NewScanner(strings.NewReader(value))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, word := range strings.Fields(line) {
+			var parsed sopsage.ParsedIdentities
+			if err := parsed.Import(word); err != nil || len(parsed) != 1 {
+				return InlineAgeKeyInvalid
+			}
+			identities++
+		}
+	}
+	if scanner.Err() != nil {
+		return InlineAgeKeyInvalid
+	}
+	if identities == 0 {
+		return InlineAgeKeyEmpty
+	}
+	return InlineAgeKeyValid
+}
+
+// encryptedIdentitySizeLimit matches the 16 MiB bound SOPS puts on an
+// encrypted identity (age/encrypted_keys.go privateKeySizeLimit).
+const encryptedIdentitySizeLimit = 1 << 24
+
+// encryptedIdentityReadable reports whether an encrypted identity reads the
+// way SOPS reads it before asking for the passphrase: through the armor decoder
+// when armored, bounded at encryptedIdentitySizeLimit, where reaching the limit
+// counts as too long. The read error is discarded unformatted: armor errors
+// quote input lines, which here are key material.
+func encryptedIdentityReadable(r io.Reader) bool {
+	contents, err := io.ReadAll(io.LimitReader(r, encryptedIdentitySizeLimit))
+	return err == nil && len(contents) < encryptedIdentitySizeLimit
 }
 
 func ageIdentityFileError(source, path string, cause error) error {

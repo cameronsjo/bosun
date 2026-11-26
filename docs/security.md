@@ -47,7 +47,13 @@ Bosun uses [age](https://age-encryption.org/) as the encryption backend for SOPS
 2. `SOPS_AGE_KEY_FILE` environment variable (path to key file)
 3. Default: `~/.config/sops/age/keys.txt`
 
-Inline key content takes precedence. Resolved files must be regular,
+Inline key content takes precedence and is checked with the parsing rules SOPS
+applies to `SOPS_AGE_KEY`: a value SOPS would reject fails startup, while a
+blank or comment-only value counts as unset and falls through to the files.
+Bosun never logs, returns, or displays the inline value or its parse error,
+since either can carry key bytes; the error names only the variable. A
+passphrase-encrypted inline identity is accepted with a warning, because it
+cannot be checked without the passphrase. Resolved files must be regular,
 non-empty, and contain at least one parseable Age identity. Bosun rejects an
 invalid file before decryption and explains that Docker can create a directory
 when a file bind-mount source is missing. When secrets files are configured,

@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
+	"filippo.io/age/armor"
+	"filippo.io/age/plugin"
 	sopslib "github.com/getsops/sops/v3"
 	sopsaes "github.com/getsops/sops/v3/aes"
 	sopsage "github.com/getsops/sops/v3/age"
@@ -73,7 +76,7 @@ func TestInferSOPSFormat(t *testing.T) {
 }
 
 func TestSOPSOps_DecryptSupportedFormats(t *testing.T) {
-	t.Setenv("SOPS_AGE_KEY", "test-key-present")
+	t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
 
 	yamlMetadata := `secret: ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
 sops:
@@ -707,7 +710,7 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	const testAgeIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU"
 
 	t.Run("SOPS_AGE_KEY takes precedence over invalid key file", func(t *testing.T) {
-		t.Setenv("SOPS_AGE_KEY", "AGE-SECRET-KEY-TEST")
+		t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
 		t.Setenv("SOPS_AGE_KEY_FILE", t.TempDir())
 		t.Setenv("HOME", t.TempDir())
 
@@ -791,6 +794,167 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 		assert.Contains(t, err.Error(), "To fix:")
 		assert.Contains(t, err.Error(), "age-keygen")
 	})
+}
+
+// TestSOPSOps_CheckAgeKeyInlineValue pins how CheckAgeKey judges the content
+// of SOPS_AGE_KEY. The rules mirror the SOPS age key source: raw lines that are
+// empty or start with "#" are skipped, every other line is split on
+// whitespace, and every word must parse as exactly one identity. A value that
+// yields no identity and no parse error is treated as unset, so the file
+// sources are still consulted, as SOPS does. The value itself must never
+// appear in the returned error or in any log line.
+func TestSOPSOps_CheckAgeKeyInlineValue(t *testing.T) {
+	const (
+		firstIdentity  = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU"
+		secondIdentity = "AGE-SECRET-KEY-1G0Q5K9TV4REQ3ZSQRMTMG8NSWQGYT0T7TZ33RAZEE0GZYVZN0APSU24RK7"
+		// firstIdentity with its final character changed, so the bech32
+		// checksum fails.
+		badChecksumIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VQ"
+		inlineSentinel      = "not-a-key-SENTINEL-7f3a"
+		binaryBodySentinel  = "BINARYBODYSENTINEL"
+		malformedArmorBody  = "not base64 !!"
+		inlineErrorText     = "SOPS_AGE_KEY does not contain a parseable Age identity"
+	)
+
+	// A well-formed armored value, built here so no fixture is pasted. The
+	// payload is arbitrary bytes, not a real encrypted identity: Bosun reads
+	// the armor but cannot check the passphrase.
+	armored, armorBody := armorForTest(t, []byte("test-only payload, not an encrypted identity"))
+
+	// A plugin identity only needs a valid bech32 encoding to parse; parsing
+	// it runs no plugin binary.
+	pluginIdentity := plugin.EncodeIdentity("bosuntest", []byte("test-only plugin data"))
+	require.NotEmpty(t, pluginIdentity)
+
+	hybrid, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+	hybridIdentity := hybrid.String()
+
+	tests := []struct {
+		name             string
+		value            string
+		withValidKeyFile bool
+		wantErr          bool
+		wantInlineError  bool
+		wantLog          string
+		mustNotEcho      []string
+	}{
+		{name: "single valid key", value: firstIdentity, mustNotEcho: []string{firstIdentity}},
+		{name: "two keys separated by a space on one line", value: firstIdentity + " " + secondIdentity, mustNotEcho: []string{firstIdentity, secondIdentity}},
+		{name: "comment line then key", value: "# note\n" + firstIdentity, mustNotEcho: []string{firstIdentity}},
+		{name: "key followed by a hash word on the same line", value: firstIdentity + " #c", wantErr: true, wantInlineError: true, mustNotEcho: []string{firstIdentity}},
+		{name: "unknown identity type", value: inlineSentinel, wantErr: true, wantInlineError: true, mustNotEcho: []string{inlineSentinel}},
+		{name: "bad checksum", value: badChecksumIdentity, wantErr: true, wantInlineError: true, mustNotEcho: []string{badChecksumIdentity}},
+		{
+			name:            "leading space before armored header",
+			value:           " " + armored,
+			wantErr:         true,
+			wantInlineError: true,
+			mustNotEcho:     []string{armorBody},
+		},
+		{
+			name:        "well-formed armored encrypted key is accepted with a warning",
+			value:       armored,
+			wantLog:     `"key_format":"armored"`,
+			mustNotEcho: []string{armorBody},
+		},
+		{
+			name:            "malformed armor is rejected",
+			value:           "-----BEGIN AGE ENCRYPTED FILE-----\n" + malformedArmorBody + "\n-----END AGE ENCRYPTED FILE-----",
+			wantErr:         true,
+			wantInlineError: true,
+			mustNotEcho:     []string{malformedArmorBody},
+		},
+		{name: "plugin identity is accepted", value: pluginIdentity, mustNotEcho: []string{pluginIdentity}},
+		{name: "post-quantum hybrid identity is accepted", value: hybridIdentity, mustNotEcho: []string{hybridIdentity}},
+		{name: "indented comment line is not a comment", value: "\t# note\n" + firstIdentity, wantErr: true, wantInlineError: true, mustNotEcho: []string{firstIdentity}},
+		{
+			name:        "binary encrypted key is accepted with a warning",
+			value:       "age-encryption.org/v1\n-> X25519 " + binaryBodySentinel + "\n",
+			wantLog:     `"key_format":"age-encryption"`,
+			mustNotEcho: []string{binaryBodySentinel},
+		},
+		{name: "whitespace only falls through to a valid key file", value: "   ", withValidKeyFile: true},
+		{name: "whitespace only with no other source", value: "   ", wantErr: true},
+		{name: "comment only falls through to a valid key file", value: "# note", withValidKeyFile: true},
+		{name: "comment lines only with no other source", value: "\n#x\n", wantErr: true},
+		{name: "invalid value next to a valid key file", value: inlineSentinel, withValidKeyFile: true, wantErr: true, wantInlineError: true, mustNotEcho: []string{inlineSentinel}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("SOPS_AGE_KEY_FILE", "")
+			if tt.withValidKeyFile {
+				keyFile := filepath.Join(t.TempDir(), "key.txt")
+				require.NoError(t, os.WriteFile(keyFile, []byte(secondIdentity+"\n"), 0o600))
+				t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+			}
+			t.Setenv("SOPS_AGE_KEY", tt.value)
+
+			var err error
+			logs := captureSOPSDebugLogs(t, func() {
+				err = NewSOPSOps().CheckAgeKey()
+			})
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+				if tt.wantInlineError {
+					assert.Contains(t, err.Error(), inlineErrorText, "the error must name SOPS_AGE_KEY as the failing source")
+				} else {
+					assert.NotContains(t, err.Error(), inlineErrorText, "an empty inline value must fall through, not fail as SOPS_AGE_KEY")
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.wantLog != "" {
+				assert.Contains(t, logs, tt.wantLog)
+			}
+			for _, secret := range tt.mustNotEcho {
+				if err != nil {
+					assert.NotContains(t, err.Error(), secret, "the error must not echo SOPS_AGE_KEY content")
+				}
+				assert.NotContains(t, logs, secret, "no log line may echo SOPS_AGE_KEY content")
+			}
+		})
+	}
+}
+
+// TestClassifyInlineAgeKey_OverlongLineIsInvalid pins the one deliberate
+// difference from SOPS: a line longer than the scanner's 64 KiB token limit is
+// reported invalid instead of being silently cut short. The line is a comment,
+// so without the scanner error check it would read as an empty value.
+func TestClassifyInlineAgeKey_OverlongLineIsInvalid(t *testing.T) {
+	value := "#" + strings.Repeat("A", 70*1024)
+	assert.Equal(t, InlineAgeKeyInvalid, ClassifyInlineAgeKey(value))
+}
+
+// TestClassifyInlineAgeKey_EncryptedIdentitySizeLimit pins the 16 MiB bound
+// SOPS puts on an encrypted identity: a value that reaches it is too long.
+func TestClassifyInlineAgeKey_EncryptedIdentitySizeLimit(t *testing.T) {
+	prefix := "age-encryption.org/v1\n"
+	assert.Equal(t, InlineAgeKeyEncryptedBinary,
+		ClassifyInlineAgeKey(prefix+strings.Repeat("A", encryptedIdentitySizeLimit-len(prefix)-1)),
+		"one byte under the bound is still readable")
+	assert.Equal(t, InlineAgeKeyInvalid,
+		ClassifyInlineAgeKey(prefix+strings.Repeat("A", encryptedIdentitySizeLimit-len(prefix))),
+		"a value that reaches the bound is too long")
+}
+
+// armorForTest armors payload with the age armor writer and returns the full
+// armored text and its first body line, which must never be echoed.
+func armorForTest(t *testing.T, payload []byte) (armored, body string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := armor.NewWriter(&buf)
+	_, err := w.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	armored = buf.String()
+	lines := strings.Split(armored, "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	return armored, lines[1]
 }
 
 func TestSOPSOps_CheckAgeKeyInjectedReaderErrors(t *testing.T) {

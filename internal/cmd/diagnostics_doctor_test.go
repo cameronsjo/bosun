@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -8,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
+	"filippo.io/age/armor"
+	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -250,6 +254,76 @@ func TestCheckAgeKey(t *testing.T) {
 		assert.Equal(t, 0, result.Failed)
 		assert.Equal(t, 0, result.Warned)
 	})
+
+	t.Run("warns for unparseable SOPS_AGE_KEY without echoing it", func(t *testing.T) {
+		const secret = "bad-secret-value-SENTINEL-91c2"
+		t.Setenv("SOPS_AGE_KEY", secret)
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
+		t.Setenv("HOME", t.TempDir())
+
+		var result CheckResult
+		output := captureDoctorColorOutput(t, func() {
+			result = checkAgeKey()
+		})
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+		assert.Contains(t, output, "SOPS_AGE_KEY")
+		assert.NotContains(t, output, secret, "doctor output must not echo SOPS_AGE_KEY content")
+	})
+
+	t.Run("whitespace SOPS_AGE_KEY reports the key file, not the variable", func(t *testing.T) {
+		keyFile := filepath.Join(t.TempDir(), "keys.txt")
+		require.NoError(t, os.WriteFile(keyFile, []byte(testAgeIdentity+"\n"), 0600))
+		t.Setenv("SOPS_AGE_KEY", "   ")
+		t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+		t.Setenv("HOME", t.TempDir())
+
+		var result CheckResult
+		output := captureDoctorColorOutput(t, func() {
+			result = checkAgeKey()
+		})
+		assert.Equal(t, 1, result.Passed)
+		assert.Contains(t, output, keyFile)
+		assert.NotContains(t, output, "via SOPS_AGE_KEY")
+	})
+
+	t.Run("encrypted SOPS_AGE_KEY is labeled as needing a passphrase", func(t *testing.T) {
+		// Well-formed armor built here, so no fixture is pasted; the payload
+		// is arbitrary bytes, not a real encrypted identity.
+		var armored bytes.Buffer
+		w := armor.NewWriter(&armored)
+		_, err := w.Write([]byte("test-only payload, not an encrypted identity"))
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+		bodySentinel := strings.Split(armored.String(), "\n")[1]
+		require.NotEmpty(t, bodySentinel)
+
+		t.Setenv("SOPS_AGE_KEY", armored.String())
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
+		t.Setenv("HOME", t.TempDir())
+
+		var result CheckResult
+		output := captureDoctorColorOutput(t, func() {
+			result = checkAgeKey()
+		})
+		assert.Equal(t, 1, result.Passed)
+		assert.Contains(t, output, "encrypted")
+		assert.NotContains(t, output, bodySentinel)
+	})
+}
+
+// captureDoctorColorOutput returns what fn printed through the ui package,
+// which writes to fatih/color's Output rather than os.Stdout.
+func captureDoctorColorOutput(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := color.Output
+	color.Output = &buf
+	t.Cleanup(func() { color.Output = previous })
+	fn()
+	color.Output = previous
+	return buf.String()
 }
 
 func TestCheckManifestDirectory(t *testing.T) {
