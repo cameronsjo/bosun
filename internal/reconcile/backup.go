@@ -65,11 +65,13 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("backup archive is empty: %s", tarFile)
 	}
 
-	// One in-process pass: list every entry and read each body to EOF. A header-
-	// only listing (`tar -tzf`) can accept a truncated archive whose headers are
-	// intact, so the body read is what proves the stream complete (#240). The same
-	// Go reader later extracts the archive for rollback, so the verifier and the
-	// consumer agree on what a valid archive is.
+	// One in-process pass: list every entry, read each body to EOF, then drain the
+	// gzip stream to its end so its checksum and trailer are checked. A header-only
+	// listing can accept a truncated archive whose headers are intact, so the body
+	// read is what proves the stream complete (#240). Rollback extraction reads the
+	// archive with the same Go gzip and tar packages and drains to the same gzip
+	// EOF, but it also enforces entry-name and link containment, which verification
+	// does not, so a verified archive can still be refused at extraction.
 	if err := verifyArchiveIntegrity(ctx, tarFile, MaxVerifyDecompressedBytes); err != nil {
 		switch {
 		case errors.Is(err, errBackupNoEntries):
@@ -100,10 +102,11 @@ func (d *DeployOps) verifyBackup(ctx context.Context, backupPath string) error {
 var errBackupNoEntries = errors.New("backup archive contains no entries")
 
 // verifyArchiveIntegrity fully reads a gzip-compressed tar archive, decompressing
-// and consuming every entry's data to EOF. Unlike `tar -tzf`, which only needs the
-// member headers, this forces decompression of every byte so a truncated data
-// stream fails with io.ErrUnexpectedEOF instead of being silently accepted (#240).
-// An archive with no entries returns errBackupNoEntries.
+// and consuming every entry's data to EOF, then draining the gzip stream so its
+// CRC-32 and size trailer are validated. Unlike a header-only listing, this forces
+// decompression of every byte so a truncated data stream fails with
+// io.ErrUnexpectedEOF and a damaged trailer with gzip.ErrChecksum instead of being
+// silently accepted (#240). An archive with no entries returns errBackupNoEntries.
 //
 // Two bounds keep a malicious archive from wedging verification (#240):
 //   - a TOTAL decompressed-byte budget (maxBytes): each entry is read through an
@@ -154,6 +157,20 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64)
 		if remaining < 0 {
 			return fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
 		}
+	}
+	// tar.Reader stops at the two end-of-archive blocks, and gzip validates its
+	// CRC-32 and size trailer only when it is read to its true EOF, an error the
+	// tar reader drops when it arrives with a full block. Drain the rest of the
+	// gzip stream so a bad checksum or a cut trailer fails here, as it does in
+	// safeExtractBackup. The drain is charged to the same budget and checks ctx
+	// per chunk.
+	n, err := copyCtx(ctx, io.Discard, io.LimitReader(gz, remaining+1))
+	if err != nil {
+		return fmt.Errorf("cannot finish archive stream: %w", err)
+	}
+	remaining -= n
+	if remaining < 0 {
+		return fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
 	}
 	if entries == 0 {
 		return errBackupNoEntries

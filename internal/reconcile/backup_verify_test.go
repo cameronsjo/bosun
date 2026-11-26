@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,13 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// writeGoTarGz writes a gzip-compressed tar holding one regular file per name,
-// using Go's archive packages so the fixture needs no system tar binary.
-func writeGoTarGz(t *testing.T, dst string, names ...string) {
+// goTarBytes returns an uncompressed tar, end-of-archive blocks included,
+// holding one regular file per name. It uses Go's archive package so the
+// fixture needs no system tar binary.
+func goTarBytes(t *testing.T, names ...string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
+	tw := tar.NewWriter(&buf)
 	for _, name := range names {
 		body := []byte("content of " + name)
 		require.NoError(t, tw.WriteHeader(&tar.Header{
@@ -34,8 +35,13 @@ func writeGoTarGz(t *testing.T, dst string, names ...string) {
 		require.NoError(t, err)
 	}
 	require.NoError(t, tw.Close())
-	require.NoError(t, gz.Close())
-	require.NoError(t, os.WriteFile(dst, buf.Bytes(), 0o644))
+	return buf.Bytes()
+}
+
+// writeGoTarGz writes a gzip-compressed tar holding one regular file per name.
+func writeGoTarGz(t *testing.T, dst string, names ...string) {
+	t.Helper()
+	writeGzipBytes(t, dst, goTarBytes(t, names...))
 }
 
 // writeGzipBytes writes raw bytes as a gzip stream: valid gzip, no valid tar.
@@ -177,4 +183,70 @@ func TestVerifyBackup_ReportsBombAndCancelDistinctly(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrBackupTooLarge)
 	})
+}
+
+// TestVerifyBackup_RejectsDamagedGzipTrailer pins that verification reads the
+// gzip stream to its true end. tar.Reader stops at the end-of-archive blocks
+// and drops a checksum or truncation error that arrives with a full block, so
+// without the drain a damaged trailer passes while safeExtractBackup refuses
+// it.
+func TestVerifyBackup_RejectsDamagedGzipTrailer(t *testing.T) {
+	tests := []struct {
+		name   string
+		damage func(compressed []byte) []byte
+		wantIs error
+	}{
+		{
+			name: "flipped CRC-32 byte in the gzip trailer",
+			damage: func(compressed []byte) []byte {
+				damaged := bytes.Clone(compressed)
+				damaged[len(damaged)-8] ^= 0xff
+				return damaged
+			},
+			wantIs: gzip.ErrChecksum,
+		},
+		{
+			name: "stream cut inside the gzip trailer after the tar end blocks",
+			damage: func(compressed []byte) []byte {
+				return bytes.Clone(compressed[:len(compressed)-4])
+			},
+			wantIs: io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backupPath := filepath.Join(t.TempDir(), "backup")
+			require.NoError(t, os.MkdirAll(backupPath, 0o755))
+			tarFile := filepath.Join(backupPath, "configs.tar.gz")
+			writeGoTarGz(t, tarFile, "conf/app.yml")
+			compressed, err := os.ReadFile(tarFile)
+			require.NoError(t, err)
+			require.Greater(t, len(compressed), 8)
+			require.NoError(t, os.WriteFile(tarFile, tt.damage(compressed), 0o644))
+
+			err = NewDeployOps(false, "").VerifyBackup(context.Background(), backupPath)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "corrupted")
+			assert.ErrorIs(t, err, tt.wantIs)
+		})
+	}
+}
+
+// TestVerifyArchiveIntegrity_ChargesTrailingStreamToBudget pins that bytes after
+// the tar end blocks count against the same decompressed-byte budget: a stream
+// whose entries fit but whose tail does not is rejected as oversized.
+func TestVerifyArchiveIntegrity_ChargesTrailingStreamToBudget(t *testing.T) {
+	tarFile := filepath.Join(t.TempDir(), "configs.tar.gz")
+	raw := append(goTarBytes(t, "conf/app.yml"), make([]byte, 8<<10)...)
+	writeGzipBytes(t, tarFile, raw)
+
+	require.NoError(t, verifyArchiveIntegrity(context.Background(), tarFile, MaxVerifyDecompressedBytes),
+		"the trailing zero bytes are within the full budget")
+
+	err := verifyArchiveIntegrity(context.Background(), tarFile, 1<<10)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBackupTooLarge)
 }

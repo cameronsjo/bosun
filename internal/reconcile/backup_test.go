@@ -127,7 +127,7 @@ func TestBackup_ScopesToDeployedFiles(t *testing.T) {
 
 // TestVerifyBackup_HonorsCancelledContext verifies that backup verification runs
 // under the caller's context, so a cancelled/deadline-exceeded context aborts the
-// `tar -tzf` listing rather than blocking indefinitely on a growing archive (#319).
+// archive read rather than blocking indefinitely on a growing archive (#319).
 func TestVerifyBackup_HonorsCancelledContext(t *testing.T) {
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not installed")
