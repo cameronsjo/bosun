@@ -165,6 +165,60 @@ func TestResolveTargets_HonorsLoneDefaultTarget(t *testing.T) {
 
 // The resolved lone-default target must flow through ConfigForTarget onto the
 // per-target config the deploy actually uses.
+func TestTargetBackupDir(t *testing.T) {
+	const base = "/app/backups"
+
+	tests := []struct {
+		name   string
+		target Target
+		want   string
+	}{
+		{"default keeps the base", Target{Name: "default"}, base},
+		{"default is case-insensitive", Target{Name: "Default"}, base},
+		{"DEFAULT is case-insensitive", Target{Name: "DEFAULT"}, base},
+		{"named target gets its own subdirectory", Target{Name: "unraid"}, filepath.Join(base, "unraid")},
+		{"hyphen and digit", Target{Name: "pi-2"}, filepath.Join(base, "pi-2")},
+		{"underscore", Target{Name: "a_b"}, filepath.Join(base, "a_b")},
+		{"backup-prefixed name stays a target directory", Target{Name: "backup-pi"}, filepath.Join(base, "backup-pi")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, TargetBackupDir(base, tt.target))
+		})
+	}
+}
+
+func TestConfigForTarget_IsolatesBackupDir(t *testing.T) {
+	base := DefaultConfig()
+	base.BackupDir = "/b"
+
+	a := base.ConfigForTarget(Target{Name: "a"})
+	b := base.ConfigForTarget(Target{Name: "b"})
+	def := base.ConfigForTarget(Target{Name: "default"})
+
+	assert.Equal(t, "/b/a", a.BackupDir)
+	assert.Equal(t, "/b/b", b.BackupDir)
+	assert.NotEqual(t, a.BackupDir, b.BackupDir, "siblings must never share a backup directory")
+	assert.Equal(t, "/b", a.BackupRoot, "named target keeps the shared root for archive exclusion")
+	assert.Equal(t, "/b", b.BackupRoot)
+	assert.Equal(t, "/b", def.BackupDir, "the default target keeps the configured BackupDir")
+	assert.Empty(t, def.BackupRoot, "the default target has no separate root")
+	assert.Equal(t, "/b", base.BackupDir, "deriving a target must not mutate the base config")
+
+	t.Run("deriving from an already derived config does not nest", func(t *testing.T) {
+		again := a.ConfigForTarget(Target{Name: "b"})
+		assert.Equal(t, "/b/b", again.BackupDir)
+		assert.Equal(t, "/b", again.BackupRoot)
+	})
+
+	t.Run("explicit BackupRoot on the base is honored", func(t *testing.T) {
+		rooted := DefaultConfig()
+		rooted.BackupDir = "/ignored"
+		rooted.BackupRoot = "/r"
+		assert.Equal(t, "/r/a", rooted.ConfigForTarget(Target{Name: "a"}).BackupDir)
+	})
+}
+
 func TestResolveTargets_LoneDefaultFlowsThroughConfigForTarget(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Targets = []Target{{
@@ -182,6 +236,7 @@ func TestResolveTargets_LoneDefaultFlowsThroughConfigForTarget(t *testing.T) {
 	assert.Equal(t, "homelab", targetCfg.ProjectName, "project_name must reach the per-target config the deploy uses")
 	assert.Equal(t, "/custom/default-state.json", targetCfg.StateFile, "explicit default state_file must reach the deploy config")
 	assert.Equal(t, "/custom/default-staging", targetCfg.StagingDir, "explicit default staging_dir must reach the deploy config")
+	assert.Equal(t, cfg.BackupDir, targetCfg.BackupDir, "a lone default target must keep the configured BackupDir")
 }
 
 func TestResolveTargets_ExplicitEmptyMatchesAbsent(t *testing.T) {

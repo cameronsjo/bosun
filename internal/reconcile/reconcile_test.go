@@ -5900,6 +5900,14 @@ func TestValidateTargetName(t *testing.T) {
 		{"has spaces", true},
 		{"has.dots", true},
 		{"-starts-with-dash", true},
+		// A name shaped exactly like a backup directory is reserved (#791); names
+		// that merely start with "backup-" stay valid.
+		{"backup-20240115-143022", true},
+		{"BACKUP-20240115-143022", true},
+		{"backup-pi", false},
+		{"backup-2024", false},
+		{"backup-20240115-14302", false},
+		{"backup-20240115-143022-x", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

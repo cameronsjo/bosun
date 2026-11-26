@@ -358,7 +358,7 @@ inodes at the same path.
 ### Rollback Capabilities
 
 **Reconcile Backups**: The reconcile command creates timestamped backups before deployment:
-- Location: `/app/backups/backup-YYYYMMDD-HHMMSS/`
+- Location: `/app/backups/backup-YYYYMMDD-HHMMSS/`; a named target in a multi-target deployment uses `/app/backups/<target>/backup-YYYYMMDD-HHMMSS/`
 - Contents: `configs.tar.gz` with the current regular-file footprint of the
   rendered deploy targets at their appdata destinations
 

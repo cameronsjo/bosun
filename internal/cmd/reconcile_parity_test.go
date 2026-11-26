@@ -82,6 +82,7 @@ var unsetByBoth = []string{
 	"TargetName",
 	"LockFile",
 	"BackupsToKeep",
+	"BackupRoot",
 	"ProjectName",
 	"ForceRedeployUnchanged",
 }

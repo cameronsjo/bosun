@@ -3465,7 +3465,8 @@ func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 
 	// Create 5 valid backup directories.
 	for i := 0; i < 5; i++ {
-		name := fmt.Sprintf("backup-2024-01-0%d", i+1)
+		// Real backup names are backup-YYYYMMDD-HHMMSS; retention matches that shape only.
+		name := fmt.Sprintf("backup-20240101-00000%d", i+1)
 		makeBackupDir(t, tmpDir, name, true)
 	}
 
