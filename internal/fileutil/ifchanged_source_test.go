@@ -146,3 +146,73 @@ func TestCopyFileUnderRootIfChangedLinkedSourceCreatesNoRoot(t *testing.T) {
 	_, statErr := os.Lstat(root)
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "a skipped source must not create the destination root")
 }
+
+// TestCopyFileUnderRootIfChangedDirectorySourceCreatesNoRoot pins that a
+// directory source is refused as an unsupported type before the missing
+// destination root is created.
+func TestCopyFileUnderRootIfChangedDirectorySourceCreatesNoRoot(t *testing.T) {
+	t.Parallel()
+
+	dir := realTempDir(t)
+	src := filepath.Join(dir, "a-directory")
+	require.NoError(t, os.Mkdir(src, 0o755))
+	root := filepath.Join(dir, "absent-root")
+
+	changed, err := fileutil.CopyFileUnderRootIfChanged(context.Background(), src, root, filepath.Join(root, "dst.txt"))
+
+	require.ErrorIs(t, err, fileutil.ErrUnsupportedFileType)
+	assert.False(t, changed)
+	_, statErr := os.Lstat(root)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused source must not create the destination root")
+}
+
+// TestCopyFileUnderRootRefusesSourceBeforeCreatingRoot pins the pinned plain
+// copy (CopyFileUnderRoot, the standard-mode single-file deploy) to CopyFile's
+// source contract with no destination mutation: a symlinked source returns
+// ErrSymlinkSkipped and a directory source ErrUnsupportedFileType, and neither
+// creates the missing root.
+func TestCopyFileUnderRootRefusesSourceBeforeCreatingRoot(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  func(t *testing.T, dir string) string
+		wantErr error
+	}{
+		{
+			name: "symlink to a regular file",
+			source: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "target.txt")
+				require.NoError(t, os.WriteFile(target, []byte("payload"), 0o644))
+				link := filepath.Join(dir, "link")
+				require.NoError(t, os.Symlink(target, link))
+				return link
+			},
+			wantErr: fileutil.ErrSymlinkSkipped,
+		},
+		{
+			name: "directory",
+			source: func(t *testing.T, dir string) string {
+				src := filepath.Join(dir, "a-directory")
+				require.NoError(t, os.Mkdir(src, 0o755))
+				return src
+			},
+			wantErr: fileutil.ErrUnsupportedFileType,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := realTempDir(t)
+			src := tc.source(t, dir)
+			root := filepath.Join(dir, "absent-root")
+
+			err := fileutil.CopyFileUnderRoot(context.Background(), src, root, filepath.Join(root, "dst.txt"))
+
+			require.ErrorIs(t, err, tc.wantErr)
+			_, statErr := os.Lstat(root)
+			assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused source must not create the destination root")
+		})
+	}
+}

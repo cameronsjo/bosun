@@ -535,28 +535,57 @@ func sourceHashContext(ctx context.Context, path string) ([sha256.Size]byte, err
 // final-component symlink and never blocks on a FIFO, so a path replaced after
 // the Lstat is refused instead of read through.
 func sourceHashContextWithOps(ctx context.Context, path string, ops sourceHashOps) ([sha256.Size]byte, error) {
+	sum, _, err := sourceHashIdentityWithOps(ctx, path, ops)
+	return sum, err
+}
+
+// sourceHashIdentityWithOps is sourceHashContextWithOps that also returns the
+// identity of the file it hashed, so a later reopen of the source can be
+// checked against it with os.SameFile.
+func sourceHashIdentityWithOps(ctx context.Context, path string, ops sourceHashOps) ([sha256.Size]byte, fs.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
-		return [sha256.Size]byte{}, err
+		return [sha256.Size]byte{}, nil, err
 	}
 	before, err := ops.lstat(path)
 	if err != nil {
-		return [sha256.Size]byte{}, fmt.Errorf("inspect source: %w", err)
+		return [sha256.Size]byte{}, nil, fmt.Errorf("inspect source: %w", err)
 	}
 	if before.Mode()&os.ModeSymlink != 0 {
-		return [sha256.Size]byte{}, ErrSymlinkSkipped
+		return [sha256.Size]byte{}, nil, ErrSymlinkSkipped
 	}
 	if err := validateRegularFile(path, before); err != nil {
-		return [sha256.Size]byte{}, err
+		return [sha256.Size]byte{}, nil, err
 	}
 	f, opened, err := ops.open(path, false)
 	if err != nil {
-		return [sha256.Size]byte{}, err
+		return [sha256.Size]byte{}, nil, err
 	}
 	defer func() { _ = f.Close() }()
 	if !os.SameFile(before, opened) {
-		return [sha256.Size]byte{}, fmt.Errorf("source changed while hashing %s", path)
+		return [sha256.Size]byte{}, nil, fmt.Errorf("source changed while hashing %s", path)
 	}
-	return hashReader(ctx, f)
+	sum, err := hashReader(ctx, f)
+	if err != nil {
+		return [sha256.Size]byte{}, nil, err
+	}
+	return sum, opened, nil
+}
+
+// checkCopySource is the source Lstat gate CopyFile applies, for a caller that
+// must run it before any destination mutation: a symlink returns
+// ErrSymlinkSkipped (with the usual warning) and another non-regular entry
+// returns ErrUnsupportedFileType. An Lstat error is returned unwrapped, as
+// CopyFile does, so os.IsNotExist keeps working.
+func checkCopySource(src string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		warnSymlinkSkipped(src)
+		return ErrSymlinkSkipped
+	}
+	return validateRegularFile(src, info)
 }
 
 func hashReader(ctx context.Context, reader io.Reader) ([sha256.Size]byte, error) {

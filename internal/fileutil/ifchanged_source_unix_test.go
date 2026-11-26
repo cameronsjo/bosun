@@ -90,3 +90,40 @@ func TestCopyFileIfChangedReportsSourceInspectionFailure(t *testing.T) {
 		})
 	}
 }
+
+// TestPinnedCopiesRefuseNamedPipeSourceBeforeCreatingRoot pins that a FIFO
+// source given directly to either pinned copy is refused as an unsupported
+// type, without blocking on the pipe and without creating the missing
+// destination root.
+func TestPinnedCopiesRefuseNamedPipeSourceBeforeCreatingRoot(t *testing.T) {
+	t.Parallel()
+
+	runs := map[string]func(ctx context.Context, src, root, dst string) error{
+		"CopyFileUnderRoot": func(ctx context.Context, src, root, dst string) error {
+			return CopyFileUnderRoot(ctx, src, root, dst)
+		},
+		"CopyFileUnderRootIfChanged": func(ctx context.Context, src, root, dst string) error {
+			_, err := CopyFileUnderRootIfChanged(ctx, src, root, dst)
+			return err
+		},
+	}
+
+	for name, run := range runs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			pipePath := filepath.Join(dir, "pipe")
+			require.NoError(t, syscall.Mkfifo(pipePath, 0o600))
+			root := filepath.Join(dir, "absent-root")
+
+			err = runNamedPipeOperation(t, pipePath, func() error {
+				return run(context.Background(), pipePath, root, filepath.Join(root, "dst.txt"))
+			})
+
+			require.ErrorIs(t, err, ErrUnsupportedFileType)
+			_, statErr := os.Lstat(root)
+			assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused source must not create the destination root")
+		})
+	}
+}

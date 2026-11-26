@@ -214,3 +214,105 @@ func TestIfChangedSourceSwappedForSymlinkIsSkipped(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(rootPath, "dst.txt"))
 	})
 }
+
+// equalPinnedFixture returns a source and a pinned root whose destination holds
+// the same content, so the pinned skip decision reaches the byte comparison
+// that reopens the source.
+func equalPinnedFixture(t *testing.T) (dir, src string, root *os.Root, rootPath string) {
+	t.Helper()
+	dir, src = writeSourceFixture(t, "source.txt", "same")
+	rootPath = filepath.Join(dir, "root")
+	require.NoError(t, os.Mkdir(rootPath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "dst.txt"), []byte("same"), 0o600))
+	root, err := os.OpenRoot(rootPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = root.Close() })
+	return dir, src, root, rootPath
+}
+
+// secondOpen returns source ops whose first open is the production open and
+// whose later opens run replace, modelling a source swapped after it was
+// hashed.
+func secondOpen(replace func(string) (*os.File, fs.FileInfo, error)) sourceHashOps {
+	ops := defaultSourceHashOps()
+	opens := 0
+	ops.open = func(path string, follow bool) (*os.File, fs.FileInfo, error) {
+		opens++
+		if opens == 1 {
+			return openRegularSource(path, follow)
+		}
+		return replace(path)
+	}
+	return ops
+}
+
+func refuseCopy(t *testing.T) func(context.Context, string, string) error {
+	t.Helper()
+	return func(context.Context, string, string) error {
+		t.Fatal("the copy ran after the source changed")
+		return nil
+	}
+}
+
+// TestPinnedComparisonReopenOfSwappedSource pins the byte-comparison reopen in
+// the pinned skip decision: a source that became a symlink after it was hashed
+// is the benign skip, and a source that became a different file is refused.
+func TestPinnedComparisonReopenOfSwappedSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("swapped for a symlink is skipped", func(t *testing.T) {
+		t.Parallel()
+		_, src, root, rootPath := equalPinnedFixture(t)
+		ops := secondOpen(func(string) (*os.File, fs.FileInfo, error) {
+			return nil, nil, ErrSymlinkSkipped
+		})
+
+		changed, verify, err := copyFileIfChangedDeferredAtRootWithSource(context.Background(), src, "dst.txt", root, "dst.txt", refuseCopy(t), ops)
+
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Nil(t, verify)
+		got, readErr := os.ReadFile(filepath.Join(rootPath, "dst.txt"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "same", string(got))
+	})
+
+	t.Run("replaced by a different file is refused", func(t *testing.T) {
+		t.Parallel()
+		dir, src, root, _ := equalPinnedFixture(t)
+		other := filepath.Join(dir, "other.txt")
+		require.NoError(t, os.WriteFile(other, []byte("same"), 0o644))
+		ops := secondOpen(func(string) (*os.File, fs.FileInfo, error) {
+			return openRegularSource(other, false)
+		})
+
+		changed, verify, err := copyFileIfChangedDeferredAtRootWithSource(context.Background(), src, "dst.txt", root, "dst.txt", refuseCopy(t), ops)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "source changed while comparing")
+		assert.False(t, changed)
+		assert.Nil(t, verify)
+	})
+}
+
+// TestPinnedPreRootOpenOfSwappedSourceCreatesNoRoot drives the pinned path's
+// pre-root source open with a source that became a symlink after the up-front
+// Lstat check: it is the benign skip and the missing root is not created.
+func TestPinnedPreRootOpenOfSwappedSourceCreatesNoRoot(t *testing.T) {
+	t.Parallel()
+
+	dir, src := writeSourceFixture(t, "source.txt", "payload")
+	rootPath := filepath.Join(dir, "absent-root")
+	pinned := newPinnedDir(rootPath)
+	defer pinned.close()
+	ops := defaultSourceHashOps()
+	ops.open = func(string, bool) (*os.File, fs.FileInfo, error) { return nil, nil, ErrSymlinkSkipped }
+
+	changed, verify, err := pinned.copyFileIfChangedDeferredWithSource(context.Background(), src, filepath.Join(rootPath, "dst.txt"), refuseCopy(t), ops)
+
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, verify)
+	_, statErr := os.Lstat(rootPath)
+	assert.ErrorIs(t, statErr, fs.ErrNotExist)
+}
