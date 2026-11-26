@@ -414,7 +414,7 @@ The daemon is a long-running service that watches for changes and auto-deploys.
 bosun daemon                          # Start with defaults
 bosun daemon -p 9090                  # Custom HTTP port
 bosun daemon --poll-interval 1800     # Poll every 30 minutes
-bosun daemon --poll-interval 0        # Webhooks only (no polling)
+bosun daemon --poll-interval 0        # Webhooks only (no polling); BOSUN_POLL_INTERVAL=0 does the same
 bosun daemon -n                       # Dry run mode
 ```
 
