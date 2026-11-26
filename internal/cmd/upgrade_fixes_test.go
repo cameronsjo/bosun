@@ -29,7 +29,9 @@ func composeCommand(t *testing.T, doc *yaml.Node, service string) []string {
 }
 
 // resetUpgradeTraefikFlags restores the package-level flag variables, which
-// cobra leaves at whatever the previous Execute call set.
+// cobra leaves at whatever the previous Execute call set. The help flag is the
+// same kind of leak: upgrade_test.go runs "upgrade traefik --help", and cobra
+// keeps the parsed value, so every command test here passes --help=false.
 func resetUpgradeTraefikFlags(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -285,7 +287,7 @@ func TestUpgradeTraefikCmd_ExitStatus(t *testing.T) {
 		resetUpgradeTraefikFlags(t)
 		missing := filepath.Join(t.TempDir(), "does-not-exist.yml")
 
-		_, err := executeCmd(t, "upgrade", "traefik", "--compose", missing)
+		_, err := executeCmd(t, "upgrade", "traefik", "--help=false", "--compose", missing)
 
 		assert.Error(t, err)
 	})
@@ -295,7 +297,7 @@ func TestUpgradeTraefikCmd_ExitStatus(t *testing.T) {
 		compose := filepath.Join(t.TempDir(), "compose.yml")
 		require.NoError(t, os.WriteFile(compose, []byte("services:\n  web:\n    image: nginx:latest\n"), 0o644))
 
-		_, err := executeCmd(t, "upgrade", "traefik", "--compose", compose)
+		_, err := executeCmd(t, "upgrade", "traefik", "--help=false", "--compose", compose)
 
 		assert.Error(t, err)
 	})
@@ -309,7 +311,7 @@ func TestUpgradeTraefikCmd_ExitStatus(t *testing.T) {
 		require.NoError(t, os.Mkdir(dynamic, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dynamic, "middlewares.yml"), []byte("http:\n  middlewares: [unclosed\n"), 0o644))
 
-		_, err := executeCmd(t, "upgrade", "traefik", "--compose", compose, "--dynamic", dynamic, "--yes")
+		_, err := executeCmd(t, "upgrade", "traefik", "--help=false", "--compose", compose, "--dynamic", dynamic, "--yes")
 
 		assert.Error(t, err)
 	})
@@ -319,7 +321,7 @@ func TestUpgradeTraefikCmd_ExitStatus(t *testing.T) {
 		compose := filepath.Join(t.TempDir(), "compose.yml")
 		require.NoError(t, os.WriteFile(compose, []byte(traefikCompose), 0o644))
 
-		_, err := executeCmd(t, "upgrade", "traefik", "--compose", compose, "--dry-run")
+		_, err := executeCmd(t, "upgrade", "traefik", "--help=false", "--compose", compose, "--dry-run")
 
 		assert.NoError(t, err)
 	})

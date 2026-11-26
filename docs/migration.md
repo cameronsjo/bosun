@@ -275,16 +275,18 @@ config:
 **Migration command:**
 
 ```bash
-# Migrate unversioned manifests to the new format
-bosun migrate
+# Preview which manifests would be migrated (the default is a dry run)
+bosun migrate version
 
-# Preview changes without modifying files
-bosun migrate --dry-run
+# Migrate unversioned manifests to the new format
+bosun migrate version --write
 ```
+
+A manifest is rewritten only when the result is one YAML document with both `apiVersion` and `kind`. A file that cannot be migrated that way (for example one holding several YAML documents) is reported and left unchanged, and the command exits non-zero after processing every file.
 
 **Backwards compatibility:**
 - Manifests without `apiVersion` continue to work with a warning
-- The `bosun migrate` command adds versioning to existing manifests
+- The `bosun migrate version` command adds versioning to existing manifests
 - No breaking changes to existing workflows
 
 ## Getting Help

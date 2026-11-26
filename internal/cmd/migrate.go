@@ -41,8 +41,12 @@ what would be changed without modifying files.
 
 Examples:
   bosun migrate version        # Show which files need migration (dry-run)
-  bosun migrate version -w     # Actually migrate files`,
-	Run: runMigrateVersion,
+  bosun migrate version -w     # Actually migrate files
+
+A file that cannot be migrated into one valid manifest (for example one that
+holds several YAML documents) is reported and left unchanged. The command
+still processes every file, then exits non-zero.`,
+	RunE: runMigrateVersion,
 }
 
 var migrateHelmCmd = &cobra.Command{
@@ -89,11 +93,13 @@ func init() {
 	rootCmd.AddCommand(migrateCmd)
 }
 
-func runMigrateVersion(cmd *cobra.Command, args []string) {
+func runMigrateVersion(cmd *cobra.Command, args []string) error {
+	// A failure here is not a usage mistake; the usage text would only bury it.
+	cmd.SilenceUsage = true
+
 	cfg, err := config.Load()
 	if err != nil {
-		_, _ = ui.Red.Printf("Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	// Use config paths if not specified
@@ -128,13 +134,12 @@ func runMigrateVersion(cmd *cobra.Command, args []string) {
 
 	results, err := manifest.MigrateDirectory(dirs, opts)
 	if err != nil {
-		_, _ = ui.Red.Printf("Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("migrate manifests: %w", err)
 	}
 
 	if len(results) == 0 {
 		fmt.Println("No manifest files found in specified directories.")
-		return
+		return nil
 	}
 
 	// Display results
@@ -173,6 +178,13 @@ func runMigrateVersion(cmd *cobra.Command, args []string) {
 		fmt.Println()
 		_, _ = ui.Yellow.Println("Run 'bosun migrate version --write' to apply changes.")
 	}
+
+	// Every file has been processed and reported; now fail if any could not be
+	// migrated, so a script does not read the run as a success.
+	if errors > 0 {
+		return fmt.Errorf("%d manifest file(s) could not be migrated", errors)
+	}
+	return nil
 }
 
 func runMigrateHelm(cmd *cobra.Command, args []string) error {
