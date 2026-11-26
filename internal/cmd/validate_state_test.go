@@ -26,7 +26,7 @@ func TestRunFullDryRunWithConfig_PreservesConfiguredState(t *testing.T) {
 	cfg := fullDryRunTestConfig(t, repoDir, stateFile)
 	scratchRoot := t.TempDir()
 	t.Setenv("TMPDIR", scratchRoot)
-	require.NoError(t, runFullDryRunWithConfig(cfg))
+	require.NoError(t, runFullDryRunTarget(cfg, runValidateReconciler))
 
 	assert.FileExists(t, filepath.Join(cfg.StagingDir, "compose", "docker-compose.yml"),
 		"successful full validation must render the local repository")
@@ -49,7 +49,7 @@ func TestRunFullDryRunWithConfig_CleansScratchStateOnFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(stateFile, seed, 0o600))
 
 	cfg := fullDryRunTestConfig(t, filepath.Join(baseDir, "missing-repo"), stateFile)
-	err := runFullDryRunWithConfig(cfg)
+	err := runFullDryRunTarget(cfg, runValidateReconciler)
 	require.Error(t, err)
 
 	matches, err := filepath.Glob(filepath.Join(tmpDir, "bosun-reconcile-dry-run-state-*"))
@@ -73,7 +73,7 @@ func TestRunFullDryRunWithConfig_ReportsScratchStateCreationFailure(t *testing.T
 	cfg := fullDryRunTestConfig(t, filepath.Join(baseDir, "missing-repo"), stateFile)
 	t.Setenv("TMPDIR", tmpFile)
 
-	err := runFullDryRunWithConfig(cfg)
+	err := runFullDryRunTarget(cfg, runValidateReconciler)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create temporary dry-run state directory")
 	assert.NoDirExists(t, cfg.RepoDir, "state preparation must fail before Git creates a clone")

@@ -152,7 +152,7 @@ func TestRunFullDryRunWith_FileSystemFailures(t *testing.T) {
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 
 		called := false
-		err := runFullDryRunTarget(reconcile.DefaultConfig(), func(_ context.Context, _ *reconcile.Config, _ ...reconcile.ReconcilerOption) error {
+		err := runFullDryRunTarget(reconcile.DefaultConfig(), func(_ context.Context, _ *reconcile.Config) error {
 			called = true
 			return nil
 		})

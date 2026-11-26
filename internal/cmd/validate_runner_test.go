@@ -16,14 +16,15 @@ import (
 
 // recordedValidateRun is what a validateRunner received for one target.
 type recordedValidateRun struct {
-	cfg      *reconcile.Config
-	optCount int
+	cfg *reconcile.Config
 }
 
 // recordingValidateRunner records every call and fails for the named target.
+// A validateRunner takes no reconciler options, so a validation cannot attach an
+// alerter to the reconciler it runs; the type is the control, not an assertion.
 func recordingValidateRunner(runs *[]recordedValidateRun, failTarget string) validateRunner {
-	return func(_ context.Context, cfg *reconcile.Config, opts ...reconcile.ReconcilerOption) error {
-		*runs = append(*runs, recordedValidateRun{cfg: cfg, optCount: len(opts)})
+	return func(_ context.Context, cfg *reconcile.Config) error {
+		*runs = append(*runs, recordedValidateRun{cfg: cfg})
 		if failTarget != "" && cfg.TargetName == failTarget {
 			return errors.New("simulated failure")
 		}
@@ -107,20 +108,14 @@ func TestBuildValidateReconcileConfig(t *testing.T) {
 
 // TestRunFullDryRunWith_RunsEachTargetWithTheReconcileConfig pins that
 // `bosun validate --full` runs the reconciler it is handed with the configuration
-// built from the environment and project config, once per target, with no hooks,
-// no reloader and no reconciler options (so no alerter).
+// built from the environment and project config, once per target, with no hooks
+// and no reloader. (A runner takes no reconciler options, so no alerter either.)
 func TestRunFullDryRunWith_RunsEachTargetWithTheReconcileConfig(t *testing.T) {
 	setValidateEnv(t)
 	staging, repo, state := setValidatePaths(t)
 	t.Setenv("BOSUN_TARGETS", validateTwoTargets)
 	t.Setenv("DEPLOY_TARGET", "")
 	t.Setenv("FORCE", "true")
-	// An alert provider is configured, so reconcilerOptionsForCLI would hand a
-	// reconciler an alerter. Without one it returns no options at all and the
-	// zero-options assertion below could not tell a validation that attaches the
-	// CLI options from one that attaches none (the staged break showed this).
-	t.Setenv("BOSUN_DISCORD_WEBHOOK_URL", "https://discord.invalid/api/webhooks/1/token")
-	require.NotEmpty(t, reconcilerOptionsForCLI(), "the premise of the zero-options assertion")
 	chdirValidateProject(t, validateHookProjectYAML)
 
 	var runs []recordedValidateRun
@@ -134,7 +129,6 @@ func TestRunFullDryRunWith_RunsEachTargetWithTheReconcileConfig(t *testing.T) {
 	stateFiles := map[string]bool{}
 	for _, run := range runs {
 		name := run.cfg.TargetName
-		assert.Zero(t, run.optCount, "target %s: validation attaches no reconciler options, so no alerter", name)
 		assert.True(t, run.cfg.DryRun, "target %s", name)
 		assert.False(t, run.cfg.Force, "target %s", name)
 		assert.Empty(t, run.cfg.PreDeployHooks.Value, "target %s: no pre-deploy hooks, including the target's own", name)

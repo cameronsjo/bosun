@@ -25,7 +25,7 @@ var (
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate configuration and connectivity",
-	Long: `Validate bosun configuration without making changes.
+	Long: `Validate bosun configuration and connectivity.
 
 This command performs validation checks:
   1. Environment variables and configuration
@@ -36,11 +36,17 @@ This command performs validation checks:
 Use this before deploying to catch configuration issues early.
 
 The configuration is built the way "bosun reconcile" builds it, from the same
-environment variables and bosun.yaml. With --full, one dry run per target
-decrypts secrets with your age key and renders into the staging directory,
-leaving the rendered tree there at restricted permissions, as
-"bosun reconcile --dry-run" does. It runs no pre-deploy or post-sync hooks,
-sends no alerts, and ignores FORCE.
+environment variables and bosun.yaml, and the checks "bosun reconcile" makes
+before it starts (the age identity for the secrets files, target resolution,
+and a well-formed BOSUN_TARGETS) are reported as errors.
+
+The quick check changes nothing. --full is not read-only: one dry run per
+target decrypts secrets with your age key and renders into the staging
+directory, as "bosun reconcile --dry-run" does. It leaves the rendered tree
+there at restricted permissions, may delete a leftover staging tree it cannot
+secure, and on a staging directory shared with the daemon replaces the last
+staging evidence. It runs no pre-deploy or post-sync hooks, sends no alerts,
+and ignores FORCE.
 
 Examples:
   bosun validate              # Quick validation
@@ -261,6 +267,18 @@ func validateReconcileConfig() int {
 		return errors
 	}
 
+	// The checks `bosun reconcile` makes before it starts: the Age identity for
+	// the secrets files, and target resolution (reserved names, nested staging
+	// paths and other collisions).
+	if err := validateReconcileStartup(built); err != nil {
+		_, _ = ui.Red.Printf("  x Reconcile startup check: %v\n", err)
+		errors++
+	}
+	if _, err := built.ResolveTargets(); err != nil {
+		_, _ = ui.Red.Printf("  x Targets: %v\n", err)
+		errors++
+	}
+
 	// Check directories
 	if built.RepoDir != "" {
 		if _, err := os.Stat(built.RepoDir); err == nil {
@@ -314,6 +332,14 @@ func buildValidateReconcileConfig() (*reconcile.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// `bosun reconcile` logs a warning and carries on with the implicit default
+	// target when BOSUN_TARGETS does not parse. A validation that did the same
+	// would report success after checking the wrong targets.
+	if raw := os.Getenv("BOSUN_TARGETS"); raw != "" {
+		if _, _, err := reconcile.ParseTargetsOverride(raw); err != nil {
+			return nil, fmt.Errorf("BOSUN_TARGETS is not valid JSON: %w", err)
+		}
+	}
 	cfg.DryRun = true
 	cfg.Force = false
 	clearValidateSideEffects(cfg)
@@ -328,15 +354,15 @@ func clearValidateSideEffects(cfg *reconcile.Config) {
 	cfg.ConfigReloader = nil
 }
 
-// validateRunner runs one dry-run reconciliation. It receives the options a
-// reconciler would be built with; validation passes none, so no alerter is
-// attached. The production runner builds and runs a real reconciler; a test
-// substitutes one that records what it received.
-type validateRunner func(ctx context.Context, cfg *reconcile.Config, opts ...reconcile.ReconcilerOption) error
+// validateRunner runs one dry-run reconciliation for a config. It takes no
+// reconciler options, so a validation cannot attach an alerter (or anything
+// else) to the reconciler it runs: the production runner builds one with none,
+// and a test substitutes a runner that records the config it received.
+type validateRunner func(ctx context.Context, cfg *reconcile.Config) error
 
 // runValidateReconciler is the production validateRunner.
-func runValidateReconciler(ctx context.Context, cfg *reconcile.Config, opts ...reconcile.ReconcilerOption) error {
-	return reconcile.NewReconciler(cfg, opts...).Run(ctx)
+func runValidateReconciler(ctx context.Context, cfg *reconcile.Config) error {
+	return reconcile.NewReconciler(cfg).Run(ctx)
 }
 
 // runFullDryRun runs the dry-run reconciliation `bosun validate --full` asks
@@ -353,8 +379,10 @@ func runFullDryRunWith(run validateRunner) error {
 	if err != nil {
 		return fmt.Errorf("build reconcile configuration: %w", err)
 	}
-	if err := reconcile.ValidateGitAuthentication(cfg.RepoURL); err != nil {
-		return fmt.Errorf("invalid Git authentication configuration: %w", reconcile.SanitizeGitError(err))
+	// The checks `bosun reconcile` makes before it touches Git: the Age identity
+	// for the secrets files, then the Git authentication setup (sanitized).
+	if err := validateReconcileStartup(cfg); err != nil {
+		return fmt.Errorf("reconcile startup check: %w", err)
 	}
 
 	targets, err := cfg.ResolveTargets()
@@ -384,15 +412,10 @@ func runFullDryRunWith(run validateRunner) error {
 	return errors.Join(failures...)
 }
 
-// runFullDryRunWithConfig runs the full validation reconciliation for one
-// config against a temporary state copy. Reconcile records simulated attempts
-// and successes in its configured state file, so a CLI dry run must isolate
-// those writes while preserving the state used for skip and breaker decisions.
-func runFullDryRunWithConfig(cfg *reconcile.Config) error {
-	return runFullDryRunTarget(cfg, runValidateReconciler)
-}
-
-// runFullDryRunTarget is runFullDryRunWithConfig over an injected runner.
+// runFullDryRunTarget runs the full validation reconciliation for one config
+// against a temporary state copy. Reconcile records simulated attempts and
+// successes in its configured state file, so a CLI dry run must isolate those
+// writes while preserving the state used for skip and breaker decisions.
 func runFullDryRunTarget(cfg *reconcile.Config, run validateRunner) error {
 	cfg.DryRun = true
 	stateFile, cleanupState, err := prepareStateFileForCLIRun(cfg.StateFile, true)

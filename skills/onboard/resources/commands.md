@@ -425,10 +425,15 @@ state file.
 
 `validate` builds its configuration the way `bosun reconcile` does, from the same
 environment variables and `bosun.yaml`, so a configuration that `reconcile` refuses
-to start on is reported by `validate`. `--full` runs one dry run per target. It
-decrypts secrets with your age key and renders into `STAGING_DIR`, leaving the
-rendered tree there at restricted permissions, as `reconcile --dry-run` does. It
-runs no pre-deploy or post-sync hooks, sends no alerts, and ignores `FORCE`.
+to start on is reported by `validate`: an invalid hook list, a missing age identity
+for the secrets files, targets that cannot be resolved, and a `BOSUN_TARGETS` that is
+not valid JSON (`reconcile` only warns about that one). The quick check changes
+nothing. `--full` is not read-only: it runs one dry run per target, decrypts secrets
+with your age key and renders into `STAGING_DIR`, leaving the rendered tree there at
+restricted permissions, as `reconcile --dry-run` does; it may delete a leftover
+staging tree it cannot secure, and on a staging directory shared with the daemon it
+replaces the last staging evidence. It runs no pre-deploy or post-sync hooks, sends
+no alerts, and ignores `FORCE`.
 
 ### `bosun breaker`
 
